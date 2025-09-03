@@ -196,7 +196,17 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
         )
 
     metric = scoring[0]
-    return np.mean(cv_results[f"test_{metric}"])
+    scores = cv_results[f"test_{metric}"]
+    trial_data = {
+        "trial": trial.number,
+        "score_mean": np.mean(scores),
+        "score_std": np.std(scores),
+        **{f"fold{i}_score": s for i, s in enumerate(scores)},
+        **params
+    }
+
+    return np.mean(scores), trial_data
+
 
 
 def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
@@ -204,12 +214,9 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
     trial_history = []
 
     def _objective(trial):
-        score = optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling)
-        trial_history.append({
-            "trial": trial.number,
-            "score": score,
-            **trial.params
-        })
+        score, trial_data = optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling)
+        trial_history.append(trial_data)
+        
         return score
 
     study = optuna.create_study(direction="maximize",
