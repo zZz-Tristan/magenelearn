@@ -151,7 +151,6 @@ class Context:
     name: str
     model: str  # "RFC" | "XGBC" | "SVM"
     muvr_model: str
-    dropout_rate: float = 0.9
     upsample: str  # "none" | "smote" | "random"
     n_splits: int
     n_splits_cv: int = 7
@@ -162,6 +161,7 @@ class Context:
     scoring: str = "balanced_accuracy"
     k: int = 100000
     lineage_col: str = "LINEAGE"
+    dropout_rate: float = 0.9
 
 
     # artefacts populated as we go
