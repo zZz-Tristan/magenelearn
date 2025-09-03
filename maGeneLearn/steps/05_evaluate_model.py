@@ -60,6 +60,7 @@ import numpy as np                   # numerical ops
 import pandas as pd                  # TSV I/O
 import shap                          # SHAP explanations
 from sklearn.base import clone       # deep‑copy estimator
+from sklearn.inspection import permutation_importance
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     accuracy_score,
@@ -155,6 +156,7 @@ def run_evaluation(
     output_dir: Path,
     name: str,
     fasta: bool,
+    scoring: str,
     predict_only: bool = False
 ) -> None:
     """Grouped‑CV evaluation: predictions, metrics, feature importances, SHAP."""
@@ -223,7 +225,28 @@ def run_evaluation(
             feature_imps.append(
                 pd.Series(model_step.feature_importances_, index=X.columns)
             )
-        shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X))
+        elif model_step.__class__.__name__ == "SVC":
+            logging.info("Computing permutation importance for SVM (subset of features).")
+            N_TOP = min(500, X.shape[1])  # cap at 500 features
+            top_features = X.iloc[:, :N_TOP]
+            result = permutation_importance(
+                pipeline, top_features, y,
+                n_repeats=10,
+                random_state=RSEED,
+                n_jobs=-1,
+                scoring=scoring
+            )
+            fi = pd.Series(result.importances_mean, index=top_features.columns)
+            feature_imps.append(fi)
+        else:
+            logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
+
+        # SHAP only for tree-based models
+        if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
+            shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X))
+        else:
+            logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
+
     else:
         if n_splits is None:
             raise ValueError("n_splits required when CV enabled")
@@ -267,9 +290,29 @@ def run_evaluation(
             model_step = clf.named_steps.get("model", clf)
             if hasattr(model_step, "feature_importances_"):
                 feature_imps.append(pd.Series(model_step.feature_importances_, index=X.columns))
+            elif model_step.__class__.__name__ == "SVC":
+                logging.info("Computing permutation importance for SVM (subset of features).")
+                # Reduce to top-N features by univariate variance (or just first N cols)
+                N_TOP = min(500, X_tr.shape[1])  # cap at 500 features
+                top_features = X_tr.iloc[:, :N_TOP]  # simple subset; could replace with chi² selection
+                result = permutation_importance(
+                    clf, top_features, y_te,
+                    n_repeats=10,
+                    random_state=RSEED,
+                    n_jobs=-1,
+                    scoring=scoring
+                )
+                fi = pd.Series(result.importances_mean, index=top_features.columns)
+                feature_imps.append(fi)
+            else:
+                logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
 
-            # SHAP values
-            shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
+            # SHAP values only for tree-based models
+            if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
+                shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
+            else:
+                logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
+
 
     # 4️⃣  Aggregate OOF results -----------------------------------------------
     y_true = np.concatenate(oof_true)
@@ -400,6 +443,8 @@ def parse_args():
     p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     p.add_argument("--fasta", action="store_true", help = "If set, write a FASTA file of features sorted by importance")
     p.add_argument("--predict_only", action="store_true",help="Only output predictions without evaluating performance.")
+    p.add_argument("--scoring",  type=str,
+                   help="Scoring parameter for best model")
     return p.parse_args()
 
 
@@ -421,7 +466,8 @@ def main():
             output_dir=args.output_dir,
             name=args.name,
             fasta=args.fasta,
-            predict_only=args.predict_only
+            predict_only=args.predict_only,
+            scoring=args.scoring
         )
     except Exception:
         logging.exception("Evaluation failed")
