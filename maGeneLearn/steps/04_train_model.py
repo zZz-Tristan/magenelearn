@@ -147,11 +147,11 @@ def get_cv_splits(X, y, groups, n_splits):
 def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling):
     if model_key == "XGBC":
         params = {
-            "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 1200, step=200),
+            "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 2000, step=200),
             "model__learning_rate": trial.suggest_float("model__learning_rate", 0.005, 0.2, log=True),
-            "model__max_depth": trial.suggest_int("model__max_depth", 3, 8),
+            "model__max_depth": trial.suggest_int("model__max_depth", 3, 7),
             "model__min_child_weight": trial.suggest_int("model__min_child_weight", 1, 50),
-            "model__gamma": trial.suggest_float("model__gamma", 0, 10),
+            "model__gamma": trial.suggest_float("model__gamma", 0, 5),
             "model__subsample": trial.suggest_float("model__subsample", 0.5, 1.0),
             "model__colsample_bytree": trial.suggest_float("model__colsample_bytree", 0.5, 1.0),
             "model__reg_alpha": trial.suggest_float("model__reg_alpha", 1e-8, 10.0, log=True),
@@ -159,9 +159,9 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
         }
     else:  # RFC
         params = {
-            "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 1000, step=100),
-            "model__max_depth": trial.suggest_int("model__max_depth", 50, 500, step=50),
-            "model__max_features": trial.suggest_categorical("model__max_features", ["log2", "sqrt"]),
+            "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 1500, step=100),
+            "model__max_depth": trial.suggest_int("model__max_depth", 10, 100, step=10),
+            "model__max_features": trial.suggest_categorical("model__max_features", ["log2", "sqrt", 0.2, 0.5]),
         }
 
     if sampling == "smote":
