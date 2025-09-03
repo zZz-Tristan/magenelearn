@@ -6,7 +6,7 @@ Usage:
     python train_model.py
         --features PATH           Path to TSV file containing features, label, and group column (index in first column)
         --label LABEL_COL         Name of the column to use as the target label
-        --model {RFC,XGBC}        Which model to train: RFC (RandomForestClassifier) or XGBC (XGBClassifier)
+        --model {RFC,XGBC, SVM}        Which model to train: RFC (RandomForestClassifier), XGBC (XGBClassifier) or SVM
         --sampling {none,random,smote}
                                   Oversampling strategy: none (no oversampling), random (RandomOverSampler), or smote (SMOTE)
         --group_column GROUP_COL  Column name in the TSV that contains group IDs for cross-validation
@@ -57,10 +57,11 @@ from sklearn.utils.class_weight import compute_sample_weight  # For weighted tra
 from scipy.sparse import issparse
 
 # --- Machine Learning ---
-from sklearn.model_selection import StratifiedGroupKFold, RandomizedSearchCV
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 from imblearn.over_sampling import RandomOverSampler, SMOTE
+from sklearn.svm import SVC
 from imblearn.pipeline import Pipeline
 
 # --- Model saving ---
@@ -85,8 +86,8 @@ def parse_arguments():
                         help='Path to TSV file containing features + label + group column')
     parser.add_argument('--label', required=True,
                         help='Which column to use as the target label')
-    parser.add_argument('--model', choices=['RFC', 'XGBC'], required=True,
-                        help='Which model to train: RFC or XGBC')
+    parser.add_argument('--model', choices=['RFC', 'XGBC', 'SVM'], required=True,
+                        help='Which model to train: RFC, XGBC or SVM')
     parser.add_argument('--sampling', choices=['none','random','smote'], default='none',
                         help='Oversampling strategy: none, random, or smote')
     parser.add_argument('--group_column', required=True,
@@ -126,13 +127,15 @@ def prepare_pipeline(model_key, sampling):
 
     if model_key == "RFC":
         estimator = RandomForestClassifier(random_state=RSEED, n_jobs=-1)
-    else:
+    elif model_key == "XGBC":
         estimator = XGBClassifier(
             random_state=RSEED,
             n_jobs=1,  # let joblib handle outer CV parallelism
             use_label_encoder=False,
             eval_metric="logloss",
         )
+    elif model_key == "SVM":
+        estimator = SVC(random_state=RSEED, probability=True)  # probability=True for ROC/AUC support
     steps.append(("model", estimator))
     return Pipeline(steps)
 
@@ -157,12 +160,23 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
             "model__reg_alpha": trial.suggest_float("model__reg_alpha", 1e-8, 10.0, log=True),
             "model__reg_lambda": trial.suggest_float("model__reg_lambda", 1e-8, 10.0, log=True),
         }
-    else:  # RFC
+    elif model_key == "RFC":  # RFC
         params = {
             "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 1500, step=100),
             "model__max_depth": trial.suggest_int("model__max_depth", 10, 100, step=10),
             "model__max_features": trial.suggest_categorical("model__max_features", ["log2", "sqrt", 0.2, 0.5]),
         }
+        if sampling == "none":
+            params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
+
+    elif model_key == "SVM":
+        params = {
+            "model__C": trial.suggest_loguniform("model__C", 1e-3, 1e3),
+            "model__kernel": trial.suggest_categorical("model__kernel", ["linear", "rbf"]),
+            "model__gamma": trial.suggest_categorical("model__gamma", ["scale", "auto"]),
+        }
+        if sampling == "none":
+            params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
 
     if sampling == "smote":
         params["oversampler__k_neighbors"] = trial.suggest_int("oversampler__k_neighbors", 3, 10)
