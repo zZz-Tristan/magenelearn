@@ -293,8 +293,8 @@ def run_evaluation(
             elif model_step.__class__.__name__ == "SVC":
                 logging.info("Computing permutation importance for SVM (subset of features).")
                 # Reduce to top-N features by univariate variance (or just first N cols)
-                N_TOP = min(500, X_tr.shape[1])  # cap at 500 features
-                top_features = X_tr.iloc[:, :N_TOP]  # simple subset; could replace with chi² selection
+                N_TOP = min(500, X_te.shape[1])  # cap at 500 features
+                top_features = X_te.iloc[:, :N_TOP]  # simple subset; could replace with chi² selection
                 result = permutation_importance(
                     clf, top_features, y_te,
                     n_repeats=10,
