@@ -356,7 +356,8 @@ def evaluate_train(ctx: Context) -> None:
         "--output_dir", str(d),
         "--name", ctx.name + "_train",
         "--label", ctx.label,
-        "--group_column", ctx.group_col
+        "--group_column", ctx.group_col,
+        "--scoring", ctx.scoring,
     ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run)
 
 
@@ -373,7 +374,8 @@ def evaluate_holdout(ctx: Context) -> None:
         "--output_dir", str(d),
         "--name", ctx.name + "_test",
         "--label", ctx.label,
-        "--group_column", ctx.group_col
+        "--group_column", ctx.group_col,
+        "--scoring", ctx.scoring
     ], cwd=d, log=d / "eval_test.log", dry=ctx.dry_run)
 
 # ---------------------------------------------------------------------------
@@ -450,6 +452,7 @@ def train(click_ctx: click.Context, *,
           scoring:      str,
           label:        str,
           group_column: str,
+          dropout_rate: float,
           output_dir:   Path | None) -> None:
     """Train model end-to-end, with optional Chi² + MUVR feature selection."""
 
@@ -574,12 +577,15 @@ def train(click_ctx: click.Context, *,
 @click.option("--test-metadata",  type=click.Path(exists=True, path_type=Path), help="Metadata TSV for the external test set (required with --extract-features)")
 @click.option("--muvr-file",  type=click.Path(exists=True, path_type=Path), help="*_muvr_*_min.tsv file with selected features(required with --extract-features)")
 @click.option("--predict-only", is_flag=True, help="Only output predictions without computing performance metrics.")
+@click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
+              help="Metric used to pick the best hyper-parameters in 04_train_model.py")
 @click.pass_context
 def test(click_ctx: click.Context, *,
          model_file: Path,
          full_features:  Path | None,
          ready_features: Path | None,
          name: str,
+         scoring: str,
          label: str,
          group_column: str,
          output_dir: Path | None,
@@ -616,6 +622,7 @@ def test(click_ctx: click.Context, *,
                   muvr_model="None",
                   upsample="none",
                   n_splits=0,
+                  scoring=scoring,
                   dry_run=click_ctx.obj["dry"],
                   label=label,
                   group_col=group_column)
@@ -679,6 +686,7 @@ def test(click_ctx: click.Context, *,
             "--no_cv",
             "--predict_only",
             "--output_dir", str(d),
+            "--scoring", ctx.scoring,
             "--name", ctx.name + "_test",
         ], cwd=d, log=d / "predict.log", dry=ctx.dry_run)
     else:
