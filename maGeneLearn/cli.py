@@ -23,7 +23,7 @@ magene-learn train [OPTIONS]
 | `--meta-file` | `*.tsv` | Sample metadata with at least **`outcome`** (label) and **`group`** columns |
 | `--features` | `*.tsv` | Primary k‑mer count matrix (samples × k‑mers) |
 | `--name`      | *string* | Prefix used to label every output artefact |
-| `--model`     | RFC \| XGBC | Choice of ML algorithm |
+| `--model`     | RFC \| XGBC \| SVM | Choice of ML algorithm |
 
 ### Optional inputs / switches
 | Option | Purpose |
@@ -149,8 +149,9 @@ except (AttributeError, ModuleNotFoundError):
 class Context:
     base_dir: Path
     name: str
-    model: str  # "RFC" | "XGBC
+    model: str  # "RFC" | "XGBC" | "SVM"
     muvr_model: str
+    dropout_rate: float = 0.9
     upsample: str  # "none" | "smote" | "random"
     n_splits: int
     n_splits_cv: int = 7
@@ -259,7 +260,8 @@ def muvr(ctx: Context) -> None:
         "--group_col", ctx.group_col,
         "--outcome_col", ctx.label,
         "--filtered_train_dir", str(tmp_dir),
-        "--name", ctx.name
+        "--name", ctx.name,
+        "--features-dropout-rate", str(ctx.dropout_rate)
     ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run)
 
     matches = sorted(d.glob(f"{ctx.name}_muvr_{ctx.muvr_model}_min.tsv"))
@@ -337,7 +339,8 @@ def train_model(ctx: Context) -> None:
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--n_iter", str(ctx.n_iter),
-        "--scoring", ctx.scoring
+        "--scoring", ctx.scoring,
+        "--n_splits",str(ctx.n_splits_cv)
     ], cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run)
     ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
 
@@ -395,7 +398,7 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--features", type=click.Path(exists=True, path_type=Path), required=False)
 @click.option("--features2", type=click.Path(exists=True, path_type=Path))
 @click.option("--name", required=True)
-@click.option("--model", type=click.Choice(["XGBC", "RFC"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
+@click.option("--model", type=click.Choice(["XGBC", "RFC", "SVM"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
 @click.option("--muvr-model","muvr_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR feature-selection step ""(defaults to the value of --model)")
 @click.option("--upsampling", type=click.Choice(["none", "smote", "random"]), default="none")
 @click.option("--n-splits", "n_splits", default=5, show_default=True,  help="Number of folds used in the initial train/test split (Step 00)")
@@ -415,6 +418,7 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
 @click.option("--chisq-file", type=click.Path(exists=True, path_type=Path))
+@click.option("--dropout-rate", "dropout_rate", type=click.FloatRange(0.0, 1.0), default=0.9, show_default=True, help="Proportion of features randomly dropped in MUVR feature selection (0–1).")
 @click.pass_context
 
 def train(click_ctx: click.Context, *,
