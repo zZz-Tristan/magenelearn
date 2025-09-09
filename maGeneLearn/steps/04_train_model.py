@@ -55,6 +55,8 @@ import numpy as np         # Numerical arrays
 import pandas as pd        # DataFrame operations
 from sklearn.utils.class_weight import compute_sample_weight  # For weighted training
 from scipy.sparse import issparse
+import time
+import logging
 
 # --- Machine Learning ---
 from sklearn.model_selection import StratifiedGroupKFold
@@ -183,11 +185,13 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
 
     pipeline.set_params(**params)
 
+    start = time.time()
+
     if model_key == 'XGBC' and sampling == 'none':
         sw = compute_sample_weight("balanced", y)
         cv_results = cross_validate(
             pipeline, X, y, groups=groups, cv=cv_splits,
-            scoring=scoring, fit_params={"model__sample__sample_weight": sw}, n_jobs=-1
+            scoring=scoring, fit_params={"model__sample_weight": sw}, n_jobs=-1
         )
     else:
         cv_results = cross_validate(
@@ -195,14 +199,28 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
             scoring=scoring, n_jobs=-1
         )
 
+    elapsed = time.time() - start
+
     metric = scoring[0]
+    mean_score = np.mean(cv_results[f"test_{metric}"])
+    std_score = np.std(cv_results[f"test_{metric}"])
     scores = cv_results[f"test_{metric}"]
+
+    logging.info(
+        f"[Trial {trial.number}] {model_key} | "
+        f"Mean {metric}: {mean_score:.4f} "
+        f"(±{std_score:.4f}) | "
+        f"Time: {elapsed:.1f}s"
+    )
+
+
     trial_data = {
         "trial": trial.number,
         "score_mean": np.mean(scores),
         "score_std": np.std(scores),
         **{f"fold{i}_score": s for i, s in enumerate(scores)},
-        **params
+        **params,
+        "elapsed_time": elapsed
     }
 
     return np.mean(scores), trial_data
