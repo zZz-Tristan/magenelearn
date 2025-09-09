@@ -189,17 +189,34 @@ class Context:
 # Helper to run external scripts
 # ---------------------------------------------------------------------------
 
-def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, dry: bool) -> None:
+def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, stream: bool = False, dry: bool) -> None:
     click.echo(f"\n>>> {' '.join(cmd)} (cwd={cwd})")
     if dry:
         return
 
-    res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    log.write_text(res.stdout + res.stderr)
-    if res.returncode != 0:
-        click.echo(res.stderr, err=True)
-        click.echo(f"Step failed – see log {log}", err=True)
-        sys.exit(res.returncode)
+    if stream:
+        # live stream to screen + save to log
+        with open(log, "w") as lf:
+            proc = subprocess.Popen(
+                cmd, cwd=cwd,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                click.echo(line, nl=False)
+                lf.write(line)
+            ret = proc.wait()
+        if ret != 0:
+            click.echo(f"Step failed – see log {log}", err=True)
+            sys.exit(ret)
+    else:
+        res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+        log.write_text(res.stdout + res.stderr)
+        if res.returncode != 0:
+            click.echo(res.stderr, err=True)
+            click.echo(f"Step failed – see log {log}", err=True)
+            sys.exit(res.returncode)
 
 # ---------------------------------------------------------------------------
 # Individual pipeline steps (still shelling out to 00–05 scripts)
@@ -341,7 +358,7 @@ def train_model(ctx: Context) -> None:
         "--n_iter", str(ctx.n_iter),
         "--scoring", ctx.scoring,
         "--n_splits",str(ctx.n_splits_cv)
-    ], cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run)
+    ], cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run, stream=True)
     ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
 
 
