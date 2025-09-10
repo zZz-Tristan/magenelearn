@@ -136,6 +136,10 @@ def predict_with_pipeline(pipeline, X):
     # ---------- Generic sklearn branch -----------------------------------
     preds = pipeline.predict(X)
 
+    if hasattr(model, "feature_names_in_"):
+        # Align dataframe to training column order
+        X = X.reindex(columns=model.feature_names_in_, fill_value=0)
+
     if hasattr(pipeline, "predict_proba"):
         probas = pipeline.predict_proba(X)          # full matrix
     else:
@@ -241,6 +245,9 @@ def run_evaluation(
         else:
             logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
 
+        if hasattr(model_step, "feature_names_in_"):
+            X = X.reindex(columns=model_step.feature_names_in_, fill_value=0)
+
         # SHAP only for tree-based models
         if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
             shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X))
@@ -307,6 +314,9 @@ def run_evaluation(
             else:
                 logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
 
+            if hasattr(model_step, "feature_names_in_"):
+                X_te = X_te.reindex(columns=model_step.feature_names_in_, fill_value=0)
+            
             # SHAP values only for tree-based models
             if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
                 shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
