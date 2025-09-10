@@ -15,7 +15,7 @@ Inputs:
   --fasta          If set, it produces a fasta-formatted output of the features used to train the model. Features are named according to importance based on the feature_importance() function from scikit-learn.
                    Works if features are DNA sequences, and if sequences match column names.
   --predict_only   If set, it predicts new samples that don't contain labels. So, no evaluation metrics are calculated.
-
+  --skip-shap      If set, skip SHAP value computation (faster for large datasets).
 Outputs:
   <name>_predictions_probabilities.tsv            Tab-separated file with  class probability columns indexed by sample ID, and also with 'truth' and 'prediction' columns for each sample.
   <name>_classification_report.tsv  Tab-separated file summarizing precision, recall, f1-score for each class.
@@ -161,7 +161,8 @@ def run_evaluation(
     name: str,
     fasta: bool,
     scoring: str,
-    predict_only: bool = False
+    predict_only: bool = False,
+    skip_shap: bool = False,
 ) -> None:
     """Grouped‑CV evaluation: predictions, metrics, feature importances, SHAP."""
 
@@ -248,12 +249,15 @@ def run_evaluation(
         if hasattr(model_step, "feature_names_in_"):
             X = X.reindex(columns=model_step.feature_names_in_, fill_value=0)
 
+	#SHAP is optional
+        if not skip_shap:
         # SHAP only for tree-based models
-        if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
-            shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X))
+            if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
+                shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X))
+            else:
+                logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
         else:
-            logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
-
+            logging.info("Skipping SHAP because --skip-shap was set.")
     else:
         if n_splits is None:
             raise ValueError("n_splits required when CV enabled")
@@ -316,7 +320,7 @@ def run_evaluation(
 
             if hasattr(model_step, "feature_names_in_"):
                 X_te = X_te.reindex(columns=model_step.feature_names_in_, fill_value=0)
-            
+
             # SHAP values only for tree-based models
             if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
                 shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
@@ -455,6 +459,7 @@ def parse_args():
     p.add_argument("--predict_only", action="store_true",help="Only output predictions without evaluating performance.")
     p.add_argument("--scoring",  type=str,
                    help="Scoring parameter for best model")
+    p.add_argument("--skip-shap", action="store_true", help="Skip SHAP value computation")
     return p.parse_args()
 
 
@@ -477,7 +482,8 @@ def main():
             name=args.name,
             fasta=args.fasta,
             predict_only=args.predict_only,
-            scoring=args.scoring
+            scoring=args.scoring,
+            skip_shap=args.skip_shap,
         )
     except Exception:
         logging.exception("Evaluation failed")
