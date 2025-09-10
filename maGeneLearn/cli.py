@@ -378,12 +378,12 @@ def evaluate_train(ctx: Context) -> None:
     ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run)
 
 
-def evaluate_holdout(ctx: Context) -> None:
+def evaluate_holdout(ctx: Context, skip_shap: bool = False) -> None:
     if not ctx.feat_test:
         return  # nothing to do
     d = ctx.step_dir(7, "test_eval")
     script = STEPS_DIR / "05_evaluate_model.py"
-    run([
+    cmd = [
         sys.executable, str(script),
         "--model", str(ctx.model_file),
         "--features", str(ctx.feat_test),
@@ -393,7 +393,10 @@ def evaluate_holdout(ctx: Context) -> None:
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring
-    ], cwd=d, log=d / "eval_test.log", dry=ctx.dry_run)
+    ]
+    if skip_shap:
+        cmd.append("--skip-shap")
+    run(cmd, cwd=d, log=d / "eval_test.log", dry=ctx.dry_run)
 
 # ---------------------------------------------------------------------------
 # CLI setup
@@ -596,6 +599,7 @@ def train(click_ctx: click.Context, *,
 @click.option("--predict-only", is_flag=True, help="Only output predictions without computing performance metrics.")
 @click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
+@click.option("--skip-shap", is_flag=True, help="Skip SHAP value computation during evaluation.")
 @click.pass_context
 def test(click_ctx: click.Context, *,
          model_file: Path,
@@ -608,7 +612,8 @@ def test(click_ctx: click.Context, *,
          output_dir: Path | None,
          muvr_file: Path | None,
          test_metadata : Path | None,
-         predict_only) -> None:
+         predict_only: bool,
+         skip_shap: bool) -> None:
 
     #1. Sanity check
     if (full_features is None) == (ready_features is None):
@@ -696,7 +701,7 @@ def test(click_ctx: click.Context, *,
     if predict_only:
         d = ctx.step_dir(7, "test_eval")
         script = STEPS_DIR / "05_evaluate_model.py"
-        run([
+        cmd = [
             sys.executable, str(script),
             "--model", str(ctx.model_file),
             "--features", str(ctx.feat_test),
@@ -705,9 +710,12 @@ def test(click_ctx: click.Context, *,
             "--output_dir", str(d),
             "--scoring", ctx.scoring,
             "--name", ctx.name + "_test",
-        ], cwd=d, log=d / "predict.log", dry=ctx.dry_run)
+        ]
+        if skip_shap:
+            cmd.append("--skip-shap")
+        run(cmd, cwd=d, log=d / "predict.log", dry=ctx.dry_run)
     else:
-        evaluate_holdout(ctx)
+        evaluate_holdout(ctx, skip_shap=skip_shap)
 
     #evaluate_holdout(ctx)
     click.echo("\n✅ Test evaluation complete.")
