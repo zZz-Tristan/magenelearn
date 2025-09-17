@@ -378,7 +378,7 @@ def evaluate_train(ctx: Context) -> None:
     ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run)
 
 
-def evaluate_holdout(ctx: Context, skip_shap: bool = False) -> None:
+def evaluate_holdout(ctx: Context, skip_shap: bool = False, skip_svm_importance: bool = False) -> None:
     if not ctx.feat_test:
         return  # nothing to do
     d = ctx.step_dir(7, "test_eval")
@@ -396,6 +396,8 @@ def evaluate_holdout(ctx: Context, skip_shap: bool = False) -> None:
     ]
     if skip_shap:
         cmd.append("--skip-shap")
+    if skip_svm_importance:
+        cmd.append("--skip-svm-importance")
     run(cmd, cwd=d, log=d / "eval_test.log", dry=ctx.dry_run)
 
 # ---------------------------------------------------------------------------
@@ -600,7 +602,9 @@ def train(click_ctx: click.Context, *,
 @click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
 @click.option("--skip-shap", is_flag=True, help="Skip SHAP value computation during evaluation.")
+@click.option("--skip-svm-importance", is_flag=True, help="Skip permutation importance for SVM models.")
 @click.pass_context
+
 def test(click_ctx: click.Context, *,
          model_file: Path,
          full_features:  Path | None,
@@ -613,7 +617,8 @@ def test(click_ctx: click.Context, *,
          muvr_file: Path | None,
          test_metadata : Path | None,
          predict_only: bool,
-         skip_shap: bool) -> None:
+         skip_shap: bool,
+         skip_svm_importance: bool) -> None:
 
     #1. Sanity check
     if (full_features is None) == (ready_features is None):
@@ -714,8 +719,10 @@ def test(click_ctx: click.Context, *,
         if skip_shap:
             cmd.append("--skip-shap")
         run(cmd, cwd=d, log=d / "predict.log", dry=ctx.dry_run)
+        if skip_svm_importance:
+            cmd.append("--skip-svm-importance")
     else:
-        evaluate_holdout(ctx, skip_shap=skip_shap)
+        evaluate_holdout(ctx, skip_shap=skip_shap, skip_svm_importance=skip_svm_importance)
 
     #evaluate_holdout(ctx)
     click.echo("\n✅ Test evaluation complete.")
