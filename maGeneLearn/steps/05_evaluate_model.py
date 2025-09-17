@@ -163,6 +163,7 @@ def run_evaluation(
     scoring: str,
     predict_only: bool = False,
     skip_shap: bool = False,
+    skip_svm_importance: bool = False,
 ) -> None:
     """Grouped‑CV evaluation: predictions, metrics, feature importances, SHAP."""
 
@@ -231,18 +232,26 @@ def run_evaluation(
                 pd.Series(model_step.feature_importances_, index=X.columns)
             )
         elif model_step.__class__.__name__ == "SVC":
-            logging.info("Computing permutation importance for SVM (subset of features).")
-            N_TOP = min(500, X.shape[1])  # cap at 500 features
-            top_features = X.iloc[:, :N_TOP]
-            result = permutation_importance(
-                pipeline, top_features, y,
-                n_repeats=10,
-                random_state=RSEED,
-                n_jobs=-1,
-                scoring=scoring
-            )
-            fi = pd.Series(result.importances_mean, index=top_features.columns)
-            feature_imps.append(fi)
+            if skip_svm_importance:
+                logging.info("Skipping permutation importance for SVM because --skip-svm-importance was set.")
+            else:
+                logging.info("Computing permutation importance for SVM (subset of features).")
+                if hasattr(model_step, "feature_names_in_"):
+                    X_aligned = X.reindex(columns=model_step.feature_names_in_, fill_value=0)
+                else:
+                    X_aligned = X
+
+                N_TOP = min(500, X_aligned.shape[1])  # cap at 500 features
+                top_features = X_aligned.iloc[:, :N_TOP]
+                result = permutation_importance(
+                    pipeline, top_features, y,
+                    n_repeats=10,
+                    random_state=RSEED,
+                    n_jobs=-1,
+                    scoring=scoring
+                )
+                fi = pd.Series(result.importances_mean, index=top_features.columns)
+                feature_imps.append(fi)
         else:
             logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
 
@@ -302,19 +311,26 @@ def run_evaluation(
             if hasattr(model_step, "feature_importances_"):
                 feature_imps.append(pd.Series(model_step.feature_importances_, index=X.columns))
             elif model_step.__class__.__name__ == "SVC":
-                logging.info("Computing permutation importance for SVM (subset of features).")
-                # Reduce to top-N features by univariate variance (or just first N cols)
-                N_TOP = min(500, X_te.shape[1])  # cap at 500 features
-                top_features = X_te.iloc[:, :N_TOP]  # simple subset; could replace with chi² selection
-                result = permutation_importance(
-                    clf, top_features, y_te,
-                    n_repeats=10,
-                    random_state=RSEED,
-                    n_jobs=-1,
-                    scoring=scoring
-                )
-                fi = pd.Series(result.importances_mean, index=top_features.columns)
-                feature_imps.append(fi)
+                if skip_svm_importance:
+                    logging.info("Skipping permutation importance for SVM because --skip-svm-importance was set.")
+                else:
+                    logging.info("Computing permutation importance for SVM (subset of features).")
+                    if hasattr(model_step, "feature_names_in_"):
+                        X_te_aligned = X_te.reindex(columns=model_step.feature_names_in_, fill_value=0)
+                    else:
+                        X_te_aligned = X_te
+                    # Reduce to top-N features by univariate variance (or just first N cols)
+                    N_TOP = min(500, X_te.shape[1])  # cap at 500 features
+                    top_features = X_te.iloc[:, :N_TOP]  # simple subset; could replace with chi² selection
+                    result = permutation_importance(
+                        clf, top_features, y_te,
+                        n_repeats=10,
+                        random_state=RSEED,
+                        n_jobs=-1,
+                        scoring=scoring
+                    )
+                    fi = pd.Series(result.importances_mean, index=top_features.columns)
+                    feature_imps.append(fi)
             else:
                 logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
 
@@ -457,9 +473,9 @@ def parse_args():
     p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     p.add_argument("--fasta", action="store_true", help = "If set, write a FASTA file of features sorted by importance")
     p.add_argument("--predict_only", action="store_true",help="Only output predictions without evaluating performance.")
-    p.add_argument("--scoring",  type=str,
-                   help="Scoring parameter for best model")
+    p.add_argument("--scoring",  type=str,help="Scoring parameter for best model")
     p.add_argument("--skip-shap", action="store_true", help="Skip SHAP value computation")
+    p.add_argument("--skip-svm-importance", action="store_true", help="Skip permutation importance calculation for SVM models.")
     return p.parse_args()
 
 
@@ -484,6 +500,7 @@ def main():
             predict_only=args.predict_only,
             scoring=args.scoring,
             skip_shap=args.skip_shap,
+            skip_svm_importance=args.skip_svm_importance,
         )
     except Exception:
         logging.exception("Evaluation failed")
