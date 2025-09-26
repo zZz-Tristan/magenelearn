@@ -106,6 +106,8 @@ def parse_arguments():
                         help='One or more scoring metrics for evaluation and refit (default: balanced_accuracy)')
     parser.add_argument('--n_splits', type=int, default=5,
                         help='Number of CV folds (default: 5)')
+    parser.add_argument('--n-jobs', type=int, default=-1,
+                        help='Number of parallel jobs for CV and model training (default: -1 = all cores)')
     return parser.parse_args()
 
 def load_data(path, label_col, group_col):
@@ -120,7 +122,7 @@ def load_data(path, label_col, group_col):
     return X, y, groups
 
 
-def prepare_pipeline(model_key, sampling):
+def prepare_pipeline(model_key, sampling, n_jobs):
     steps = []
     if sampling == "random":
         steps.append(("oversampler", RandomOverSampler(random_state=RSEED)))
@@ -128,11 +130,11 @@ def prepare_pipeline(model_key, sampling):
         steps.append(("oversampler", SMOTE(random_state=RSEED)))  # k_neighbors tuned in Optuna
 
     if model_key == "RFC":
-        estimator = RandomForestClassifier(random_state=RSEED, n_jobs=-1)
+        estimator = RandomForestClassifier(random_state=RSEED, n_jobs=n_jobs)
     elif model_key == "XGBC":
         estimator = XGBClassifier(
             random_state=RSEED,
-            n_jobs=1,  # let joblib handle outer CV parallelism
+            n_jobs=n_jobs,  # let joblib handle outer CV parallelism
             use_label_encoder=False,
             eval_metric="logloss",
         )
@@ -149,7 +151,7 @@ def get_cv_splits(X, y, groups, n_splits):
     return list(cv.split(X, y, groups))
 
 
-def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling):
+def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling,n_jobs):
     if model_key == "XGBC":
         params = {
             "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 2000, step=200),
@@ -196,7 +198,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
     else:
         cv_results = cross_validate(
             pipeline, X, y, groups=groups, cv=cv_splits,
-            scoring=scoring, n_jobs=-1
+            scoring=scoring, n_jobs=n_jobs
         )
 
     elapsed = time.time() - start
@@ -232,7 +234,7 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
     trial_history = []
 
     def _objective(trial):
-        score, trial_data = optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling)
+        score, trial_data = optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling,n_jobs)
         trial_history.append(trial_data)
         
         return score
@@ -260,13 +262,13 @@ def main():
     if args.sampling == 'smote' and issparse(X):
         sys.exit("Error: SMOTE cannot be applied to a sparse matrix. Densify first.")
 
-    pipeline = prepare_pipeline(args.model, args.sampling)
+    pipeline = prepare_pipeline(args.model, args.sampling, args.n_jobs)
     cv_splits = get_cv_splits(X, y, groups, args.n_splits)
 
     print("Starting Optuna hyperparameter optimization...")
     best_model, trials_df, best_params, best_score = search_hyperparameters_optuna(
         pipeline, X, y, groups, cv_splits,
-        args.model, args.sampling, args.n_iter, args.scoring
+        args.model, args.sampling, args.n_iter, args.scoring, args.n_jobs
     )
 
     Path(args.output_model).mkdir(parents=True, exist_ok=True)
