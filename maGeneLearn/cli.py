@@ -162,6 +162,7 @@ class Context:
     k: int = 100000
     lineage_col: str = "LINEAGE"
     dropout_rate: float = 0.9
+    n_jobs: int = -1
 
 
     # artefacts populated as we go
@@ -249,6 +250,7 @@ def chisq(ctx: Context, features: Path, features2: Path | None) -> None:
                       "--k", str(ctx.k),
                       "--name", ctx.name,
                       "--label", ctx.label,  # pass custom column names
+                      "--n_jobs", str(ctx.n_jobs)
                       ]
     if features2:
         cmd += ["--features2", str(features2.resolve())]
@@ -278,7 +280,8 @@ def muvr(ctx: Context) -> None:
         "--outcome_col", ctx.label,
         "--filtered_train_dir", str(tmp_dir),
         "--name", ctx.name,
-        "--features-dropout-rate", str(ctx.dropout_rate)
+        "--features-dropout-rate", str(ctx.dropout_rate),
+        "--n-jobs", str(ctx.n_jobs)
     ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run)
 
     matches = sorted(d.glob(f"{ctx.name}_muvr_{ctx.muvr_model}_min.tsv"))
@@ -443,6 +446,8 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
 @click.option("--chisq-file", type=click.Path(exists=True, path_type=Path))
 @click.option("--dropout-rate", "dropout_rate", type=click.FloatRange(0.0, 1.0), default=0.9, show_default=True, help="Proportion of features randomly dropped in MUVR feature selection (0–1).")
+@click.option("--n-jobs", "n_jobs", type=int, default=-1,
+              help="Number of parallel jobs for feature selection and model training (default: -1, all cores)")
 @click.pass_context
 
 def train(click_ctx: click.Context, *,
@@ -519,6 +524,7 @@ def train(click_ctx: click.Context, *,
         k          = k,
         muvr_model=muvr_model or model, # fallback
         lineage_col = lineage_col,
+        n_jobs=n_jobs,
     )
 
     # -------------------------------------------- ingest pre-existing artefacts
