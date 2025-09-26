@@ -5,6 +5,7 @@ import argparse
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from py_muvr.feature_selector import FeatureSelector
+from concurrent.futures import ProcessPoolExecutor
 
 """
 02_muvr_feature_selection.py
@@ -94,6 +95,8 @@ def get_opts_muvr():
                         help='Fraction of features to drop each iteration (default: 0.9)')
     parser.add_argument('--remove_na', action='store_true',
                         help = 'If set, drop any rows with NaN/NA in outcome or features (and warn)')
+    parser.add_argument('--n-jobs', type=int, default=1,
+                        help='Number of parallel jobs for MUVR (default: 1 = sequential)')
     args = parser.parse_args()
     return (
         args.train_data,
@@ -135,7 +138,7 @@ def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, rem
 
     return train_data_muvr
 
-def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcome_col, n_repetitions, n_outer, n_inner, metric, features_dropout_rate, remove_na=False):
+def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcome_col, n_repetitions, n_outer, n_inner, metric, features_dropout_rate, remove_na=False, n_jobs=1):
 
     target_col = outcome_col
     train_data_muvr = train_data_muvr[[target_col]]
@@ -210,7 +213,11 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     )
 
     print("Running MUVR")
-    feature_selector.fit(X_muvr, y_variable)
+    executor = None
+    if n_jobs != 1:
+        executor = ProcessPoolExecutor(max_workers=n_jobs)
+
+    feature_selector.fit(X_muvr, y_variable, executor=executor)
     selected_features = feature_selector.get_selected_features(feature_names=feature_names)
 
     # Obtain a dataframe containing MUVR selected features
