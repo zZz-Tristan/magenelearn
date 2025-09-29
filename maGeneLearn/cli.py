@@ -360,7 +360,8 @@ def train_model(ctx: Context) -> None:
         "--group_column", ctx.group_col,
         "--n_iter", str(ctx.n_iter),
         "--scoring", ctx.scoring,
-        "--n_splits",str(ctx.n_splits_cv)
+        "--n_splits",str(ctx.n_splits_cv),
+        "--n-jobs", str(ctx.n_jobs)
     ], cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run, stream=True)
     ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
 
