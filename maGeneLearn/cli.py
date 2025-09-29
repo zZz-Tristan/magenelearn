@@ -254,7 +254,7 @@ def chisq(ctx: Context, features: Path, features2: Path | None) -> None:
                       ]
     if features2:
         cmd += ["--features2", str(features2.resolve())]
-    run(cmd, cwd=d, log=d / "chisq.log", dry=ctx.dry_run)
+    run(cmd, cwd=d, log=d / "chisq.log", dry=ctx.dry_run, stream=True)
     ctx.chisq_file = (d / f"{ctx.name}_top{ctx.k}_features.tsv").resolve()
 
 
@@ -282,7 +282,7 @@ def muvr(ctx: Context) -> None:
         "--name", ctx.name,
         "--features-dropout-rate", str(ctx.dropout_rate),
         "--n-jobs", str(ctx.n_jobs)
-    ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run)
+    ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run, stream=True)
 
     matches = sorted(d.glob(f"{ctx.name}_muvr_{ctx.muvr_model}_min.tsv"))
     if not matches:
@@ -322,7 +322,7 @@ def extract_features(ctx: Context) -> None:
         if ctx.test_meta:
             cmd += ["--test_metadata", str(ctx.test_meta)]
 
-        run(cmd, cwd=d, log=d / "extract.log", dry=ctx.dry_run)
+        run(cmd, cwd=d, log=d / "extract.log", dry=ctx.dry_run, stream=True)
 
         # store absolute paths for downstream steps
         ctx.feat_train = (d / f"{ctx.name}_train.tsv").resolve()
@@ -379,7 +379,7 @@ def evaluate_train(ctx: Context) -> None:
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring,
-    ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run)
+    ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run, stream=True)
 
 
 def evaluate_holdout(ctx: Context, skip_shap: bool = False, skip_svm_importance: bool = False) -> None:
@@ -402,7 +402,7 @@ def evaluate_holdout(ctx: Context, skip_shap: bool = False, skip_svm_importance:
         cmd.append("--skip-shap")
     if skip_svm_importance:
         cmd.append("--skip-svm-importance")
-    run(cmd, cwd=d, log=d / "eval_test.log", dry=ctx.dry_run)
+    run(cmd, cwd=d, log=d / "eval_test.log", dry=ctx.dry_run, stream=True)
 
 # ---------------------------------------------------------------------------
 # CLI setup
@@ -481,6 +481,7 @@ def train(click_ctx: click.Context, *,
           label:        str,
           group_column: str,
           dropout_rate: float,
+          n_jobs: int,
           output_dir:   Path | None) -> None:
     """Train model end-to-end, with optional Chi² + MUVR feature selection."""
 
