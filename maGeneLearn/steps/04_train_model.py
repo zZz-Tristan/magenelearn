@@ -193,7 +193,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
         sw = compute_sample_weight("balanced", y)
         cv_results = cross_validate(
             pipeline, X, y, groups=groups, cv=cv_splits,
-            scoring=scoring, fit_params={"model__sample_weight": sw}, n_jobs=-1
+            scoring=scoring, fit_params={"model__sample_weight": sw}, n_jobs=n_jobs
         )
     else:
         cv_results = cross_validate(
@@ -230,7 +230,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
 
 
 def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
-                                  model_key, sampling, n_iter, scoring):
+                                  model_key, sampling, n_iter, scoring,n_jobs):
     trial_history = []
 
     def _objective(trial):
@@ -241,7 +241,7 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
 
     study = optuna.create_study(direction="maximize",
                                 sampler=optuna.samplers.TPESampler(seed=RSEED))
-    study.optimize(_objective, n_trials=n_iter, n_jobs=1)
+    study.optimize(_objective, n_trials=n_iter, n_jobs=n_jobs)
 
     best_params = study.best_params
     best_score = study.best_value
