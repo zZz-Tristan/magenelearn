@@ -15,7 +15,6 @@ Inputs:
     --name       Base name for output files (no extension).
 
 Parameters:
-    --id         Column name in metadata for sample IDs (default: 'SRA').
     --label      Column name in metadata for labels (default: 'SYMP').
     --k          Number of top features to select (default: 100000).
 
@@ -58,8 +57,6 @@ def get_opts():
     parser.add_argument('--features1', required=True, help='Path to feature matrix (TSV; first col = sample IDs)')
     parser.add_argument('--output_dir', required=True, help='Directory to write output files')
     parser.add_argument('--name', required=True, help='Base name for output files (no extension)')
-    parser.add_argument('--id', dest='id_col', default='SRA',
-                        help="Metadata column name for sample IDs (default: 'SRA')")
     parser.add_argument('--label', dest='label_col', default='SYMP',
                         help="Metadata column name for labels (default: 'SYMP')")
     parser.add_argument('--k', type=int, default=100000,
@@ -71,12 +68,11 @@ def get_opts():
 
 # ------------- Helpers -------------
 
-def read_meta(meta_file: str, id_col: str, label_col: str) -> pd.DataFrame:
-    df = pd.read_csv(meta_file, sep="\t", header=0, dtype=str)
-    missing = [c for c in [id_col, label_col] if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required column(s) in metadata file: {missing}. Found: {list(df.columns)}")
-    return df[[id_col, label_col]].set_index(id_col)
+def read_meta(meta_file: str, label_col: str) -> pd.DataFrame:
+    df = pd.read_csv(meta_file, sep="\t", header=0, dtype=str, index_col=0)
+    if label_col not in df.columns:
+        raise ValueError(f"Missing required column '{label_col}' in metadata file")
+    return df[[label_col]]
 
 def scan_header_and_rows(feature_file: str) -> Tuple[str, List[str], List[str]]:
     """
@@ -202,7 +198,7 @@ if __name__ == "__main__":
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Metadata & row order
-    meta_df = read_meta(args.meta, args.id_col, args.label_col)
+    meta_df = read_meta(args.meta,args.label_col)
     id_col_name, keep_cols, file_row_ids = scan_header_and_rows(args.features1)
     row_index = make_row_index(file_row_ids, meta_df.index)
     if len(row_index) == 0:
