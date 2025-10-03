@@ -71,6 +71,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.utils import compute_sample_weight
 from sklearn.preprocessing import LabelEncoder
+from sklearn.linear_model import LogisticRegression
 
 import xgboost as xgb
 
@@ -227,10 +228,20 @@ def run_evaluation(
             # Raw classifier instance
             model_step = pipeline
 
+        #tree-based models
         if hasattr(model_step, 'feature_importances_'):
             feature_imps.append(
                 pd.Series(model_step.feature_importances_, index=X.columns)
             )
+
+        #Logistic regression
+        elif isinstance(model_step, LogisticRegression):
+            logging.info("Extracting coefficients as feature importance for Logistic Regression.")
+            # For multinomial: coef_.shape = (n_classes, n_features)
+            # Take mean of absolute values across classes
+            coefs = np.mean(np.abs(model_step.coef_), axis=0)
+            fi = pd.Series(coefs, index=X.columns)
+            feature_imps.append(fi)
         elif model_step.__class__.__name__ == "SVC":
             if skip_svm_importance:
                 logging.info("Skipping permutation importance for SVM because --skip-svm-importance was set.")
@@ -263,6 +274,8 @@ def run_evaluation(
         # SHAP only for tree-based models
             if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
                 shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X))
+            elif isinstance(model_step, LogisticRegression):
+                logging.info("Skipping SHAP: Logistic Regression not supported (use coefficients instead).")
             else:
                 logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
         else:
@@ -310,6 +323,13 @@ def run_evaluation(
             model_step = clf.named_steps.get("model", clf)
             if hasattr(model_step, "feature_importances_"):
                 feature_imps.append(pd.Series(model_step.feature_importances_, index=X.columns))
+
+            elif isinstance(model_step, LogisticRegression):
+                logging.info("Extracting coefficients as feature importance for Logistic Regression.")
+                coefs = np.mean(np.abs(model_step.coef_), axis=0)
+                fi = pd.Series(coefs, index=X.columns)
+                feature_imps.append(fi)
+
             elif model_step.__class__.__name__ == "SVC":
                 if skip_svm_importance:
                     logging.info("Skipping permutation importance for SVM because --skip-svm-importance was set.")
@@ -340,6 +360,8 @@ def run_evaluation(
             # SHAP values only for tree-based models
             if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
                 shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
+            elif isinstance(model_step, LogisticRegression):
+                logging.info("Skipping SHAP: Logistic Regression not supported (use coefficients instead).")
             else:
                 logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
 
