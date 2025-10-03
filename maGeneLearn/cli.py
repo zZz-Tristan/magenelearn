@@ -23,7 +23,7 @@ magene-learn train [OPTIONS]
 | `--meta-file` | `*.tsv` | Sample metadata with at least **`outcome`** (label) and **`group`** columns |
 | `--features` | `*.tsv` | Primary k‑mer count matrix (samples × k‑mers) |
 | `--name`      | *string* | Prefix used to label every output artefact |
-| `--model`     | RFC \| XGBC \| SVM | Choice of ML algorithm |
+| `--model`     | RFC \| XGBC \| SVM \| LR Choice of ML algorithm |
 
 ### Optional inputs / switches
 | Option | Purpose |
@@ -163,6 +163,7 @@ class Context:
     lineage_col: str = "LINEAGE"
     dropout_rate: float = 0.9
     n_jobs: int = -1
+    lr_penalty: str = "l2"
 
 
     # artefacts populated as we go
@@ -349,7 +350,7 @@ def train_model(ctx: Context) -> None:
     d_model = ctx.step_dir(4, "model")
     d_cv = ctx.step_dir(5, "cv")
     script = STEPS_DIR / "04_train_model.py"
-    run([
+    cmd = [
         sys.executable, str(script),
         "--features", str(ctx.feat_train),
         "--model", ctx.model, "--sampling", ctx.upsample,
@@ -361,9 +362,15 @@ def train_model(ctx: Context) -> None:
         "--n_iter", str(ctx.n_iter),
         "--scoring", ctx.scoring,
         "--n_splits",str(ctx.n_splits_cv),
-        "--n-jobs", str(ctx.n_jobs)
-    ], cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run, stream=True)
-    ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
+        "--n-jobs", str(ctx.n_jobs),
+    ]
+    if ctx.model == "LR":
+        cmd.extend(["--lr-penalty", ctx.lr_penalty])
+    run(cmd, cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run, stream=True)
+    if ctx.model == "LR":
+        ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.lr_penalty}_{ctx.upsample}.joblib"
+    else:
+        ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
 
 
 def evaluate_train(ctx: Context) -> None:
@@ -426,9 +433,10 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--features", type=click.Path(exists=True, path_type=Path), required=False)
 @click.option("--features2", type=click.Path(exists=True, path_type=Path))
 @click.option("--name", required=True)
-@click.option("--model", type=click.Choice(["XGBC", "RFC", "SVM"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
+@click.option("--model", type=click.Choice(["XGBC", "RFC", "SVM","LR"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
 @click.option("--muvr-model","muvr_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR feature-selection step ""(defaults to the value of --model)")
 @click.option("--upsampling", type=click.Choice(["none", "smote", "random"]), default="none")
+@click.option("--lr-penalty", type=click.Choice(["l1", "l2", "elasticnet"]), default="l2",help="Penalty type for Logistic Regression (default: l2)")
 @click.option("--n-splits", "n_splits", default=5, show_default=True,  help="Number of folds used in the initial train/test split (Step 00)")
 @click.option("--n-splits-cv", "n_splits_cv", default=7, show_default=True, help="Number of CV folds used in training evaluation (Step 06)")
 @click.option("--output-dir", type=click.Path(path_type=Path))
@@ -473,6 +481,7 @@ def train(click_ctx: click.Context, *,
           name:         str,
           model:        str,
           muvr_model:   str,   # fallback
+          lr_penalty:   str,
           upsampling:   str,
           n_splits:     int,
           n_splits_cv:  int,
@@ -527,6 +536,8 @@ def train(click_ctx: click.Context, *,
         muvr_model=muvr_model or model, # fallback
         lineage_col = lineage_col,
         n_jobs=n_jobs,
+        dropout_rate=dropout_rate,
+        lr_penalty=lr_penalty,
     )
 
     # -------------------------------------------- ingest pre-existing artefacts
