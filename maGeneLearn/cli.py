@@ -433,7 +433,7 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--features", type=click.Path(exists=True, path_type=Path), required=False)
 @click.option("--features2", type=click.Path(exists=True, path_type=Path))
 @click.option("--name", required=True)
-@click.option("--model", type=click.Choice(["XGBC", "RFC", "SVM","LR"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
+@click.option("--model", type=click.Choice(["XGBC", "RFC", "SVM","LR"]), required=False, help="Classifier used in the final training step (04_train_model.py)")
 @click.option("--muvr-model","muvr_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR feature-selection step ""(defaults to the value of --model)")
 @click.option("--upsampling", type=click.Choice(["none", "smote", "random"]), default="none")
 @click.option("--lr-penalty", type=click.Choice(["l1", "l2", "elasticnet"]), default="l2",help="Penalty type for Logistic Regression (default: l2)")
@@ -457,6 +457,8 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--dropout-rate", "dropout_rate", type=click.FloatRange(0.0, 1.0), default=0.9, show_default=True, help="Proportion of features randomly dropped in MUVR feature selection (0–1).")
 @click.option("--n-jobs", "n_jobs", type=int, default=-1,
               help="Number of parallel jobs for feature selection and model training (default: -1, all cores)")
+@click.option("--feature-selection-only", is_flag=True,
+              help="Run up to Step 03 (Chi²+MUVR/extract_features) and exit without training a model.")
 @click.pass_context
 
 def train(click_ctx: click.Context, *,
@@ -465,6 +467,7 @@ def train(click_ctx: click.Context, *,
           train_meta:   Path | None,
           test_meta:    Path | None,
           no_split:     bool,
+          feature_selection_only: bool,
           #split
           lineage_col: str,
           # features
@@ -565,6 +568,8 @@ def train(click_ctx: click.Context, *,
             "--muvr needs the ORIGINAL k-mer matrix via --features "
             "(even if you hand in --features-train)."
         )
+    if not feature_selection_only and model is None:
+        raise click.UsageError("--model is required unless --feature-selection-only is used.")
 
     # ------------------------------------------------------------------ plan
     plan: List[tuple[bool, callable[[Context], None]]] = []
@@ -586,22 +591,26 @@ def train(click_ctx: click.Context, *,
     if muvr_flag:
         plan.append((True, muvr))
 
+    #ADD feautre extraction to the plan
+    plan.append((True, extract_features))
+
     # ---------------- downstream steps
-    plan.extend([
-        (True, extract_features),
-        (True, train_model),
-        (True, evaluate_train),
-        (ctx.feat_test is not None, evaluate_holdout),
-    ])
+    if not feature_selection_only:
+        plan.extend([
+            (True, train_model),
+            (True, evaluate_train),
+            (ctx.feat_test is not None, evaluate_holdout),
+        ])
 
     # ---------------------------------------------------------------- execute
     for cond, func in plan:
         if cond:
             func(ctx)
 
-    click.echo("\n✅ Training pipeline complete.")
-
-
+    if feature_selection_only:
+        click.echo("\n✅ Feature selection complete. Results are in 03_final_features/.")
+    else:
+        click.echo("\n✅ Training pipeline complete.")
 
 
 # -------------- Test command -----------------
