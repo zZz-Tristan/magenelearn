@@ -65,6 +65,7 @@ from xgboost import XGBClassifier
 from imblearn.over_sampling import RandomOverSampler, SMOTE
 from sklearn.svm import SVC
 from imblearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
 
 # --- Model saving ---
 import joblib               # For model serialization
@@ -88,7 +89,7 @@ def parse_arguments():
                         help='Path to TSV file containing features + label + group column')
     parser.add_argument('--label', required=True,
                         help='Which column to use as the target label')
-    parser.add_argument('--model', choices=['RFC', 'XGBC', 'SVM'], required=True,
+    parser.add_argument('--model', choices=['RFC', 'XGBC', 'SVM', 'LR'], required=True,
                         help='Which model to train: RFC, XGBC or SVM')
     parser.add_argument('--sampling', choices=['none','random','smote'], default='none',
                         help='Oversampling strategy: none, random, or smote')
@@ -108,6 +109,8 @@ def parse_arguments():
                         help='Number of CV folds (default: 5)')
     parser.add_argument('--n-jobs', type=int, default=-1,
                         help='Number of parallel jobs for CV and model training (default: -1 = all cores)')
+    parser.add_argument('--lr-penalty', choices=['l1', 'l2', 'elasticnet'], default='l2',
+                        help='Penalty type for Logistic Regression (default: l2)')
     return parser.parse_args()
 
 def load_data(path, label_col, group_col):
@@ -122,7 +125,7 @@ def load_data(path, label_col, group_col):
     return X, y, groups
 
 
-def prepare_pipeline(model_key, sampling, n_jobs):
+def prepare_pipeline(model_key, sampling, n_jobs, lr_penalty="l2"):
     steps = []
     if sampling == "random":
         steps.append(("oversampler", RandomOverSampler(random_state=RSEED)))
@@ -138,9 +141,23 @@ def prepare_pipeline(model_key, sampling, n_jobs):
             use_label_encoder=False,
             eval_metric="logloss",
         )
+
     elif model_key == "SVM":
         estimator = SVC(random_state=RSEED, probability=True)  # probability=True for ROC/AUC support
+
+
+    elif model_key == "LR":
+        estimator = LogisticRegression(
+            max_iter=5000,
+            solver="saga",
+            multi_class="multinomial",
+            penalty=lr_penalty,
+            random_state=RSEED,
+            n_jobs=n_jobs
+        )
+
     steps.append(("model", estimator))
+
     return Pipeline(steps)
 
 
@@ -182,8 +199,21 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
         if sampling == "none":
             params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
 
+    elif model_key == "LR":
+        params = {
+            "model__C": trial.suggest_float("model__C", 1e-3, 1e3, log=True),
+        }
+        if pipeline.named_steps["model"].penalty == "elasticnet":
+            params["model__l1_ratio"] = trial.suggest_float("model__l1_ratio", 0.0, 1.0)
+        if sampling == "none":
+            params["model__class_weight"] = trial.suggest_categorical(
+                "model__class_weight", [None, "balanced"]
+            )
+
     if sampling == "smote":
         params["oversampler__k_neighbors"] = trial.suggest_int("oversampler__k_neighbors", 3, 10)
+
+
 
     pipeline.set_params(**params)
 
@@ -262,7 +292,7 @@ def main():
     if args.sampling == 'smote' and issparse(X):
         sys.exit("Error: SMOTE cannot be applied to a sparse matrix. Densify first.")
 
-    pipeline = prepare_pipeline(args.model, args.sampling, args.n_jobs)
+    pipeline = prepare_pipeline(args.model, args.sampling, args.n_jobs,lr_penalty=args.lr_penalty)
     cv_splits = get_cv_splits(X, y, groups, args.n_splits)
 
     print("Starting Optuna hyperparameter optimization...")
@@ -273,10 +303,18 @@ def main():
 
     Path(args.output_model).mkdir(parents=True, exist_ok=True)
     Path(args.output_cv).mkdir(parents=True, exist_ok=True)
-    model_path = os.path.join(args.output_model, f"{args.name}_{args.model}_{args.sampling}.joblib")
-    joblib.dump(best_model, model_path)
 
-    cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.sampling}.tsv")
+    if args.model == "LR":
+        model_path = os.path.join(args.output_model,
+                                  f"{args.name}_{args.model}_{args.lr_penalty}_{args.sampling}.joblib")
+        cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.lr_penalty}_{args.sampling}.tsv")
+
+    else:
+        model_path = os.path.join(args.output_model, f"{args.name}_{args.model}_{args.sampling}.joblib")
+        cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.sampling}.tsv")
+
+
+    joblib.dump(best_model, model_path)
     trials_df.to_csv(cv_path, sep="\t", index=False)
 
     print(f"Best params: {best_params}")
