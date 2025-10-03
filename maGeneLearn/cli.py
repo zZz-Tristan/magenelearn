@@ -131,7 +131,7 @@ from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import List, Sequence
-import pandas as pd
+
 import click
 
 # ---------------------------------------------------------------------------
@@ -549,46 +549,6 @@ def train(click_ctx: click.Context, *,
 
     if features_train:
         ctx.feat_train = features_train.resolve()
-
-        # --- Sanity check: does features-train already have label+group? ---
-        header = pd.read_csv(ctx.feat_train, sep="\t", nrows=0).columns
-        label_ok = ctx.label in header
-        group_ok = ctx.group_col in header
-
-        if label_ok and group_ok:
-            click.echo(f"✔ features-train already contains label '{ctx.label}' "
-                       f"and group '{ctx.group_col}'. Skipping Step 03.")
-        else:
-            # missing label/group in features-train
-            if train_meta:
-                meta_header = pd.read_csv(train_meta, sep="\t", nrows=0).columns
-                meta_label_ok = ctx.label in meta_header
-                meta_group_ok = ctx.group_col in meta_header
-                if meta_label_ok and meta_group_ok:
-                    click.echo("⚠ features-train missing label/group. "
-                               "Will rebuild using train-meta via Step 03.")
-
-                    ctx.train_meta = train_meta.resolve()
-                    ctx.feat_train = None  # force Step 03 to run
-
-                    # 🔑 ensure full matrix is available
-                    if not features:
-                        raise click.UsageError(
-                            "Rebuilding requires --features (full k-mer matrix) "
-                            "in addition to --train-meta."
-                        )
-                    ctx.full_matrix = features.resolve()
-
-                else:
-                    raise click.UsageError(
-                        f"ERROR: Provided train-meta ({train_meta}) does not contain "
-                        f"required columns '{ctx.label}' and '{ctx.group_col}'."
-                    )
-            else:
-                raise click.UsageError(
-                    f"ERROR: features-train is missing required columns '{ctx.label}' "
-                    f"and/or '{ctx.group_col}', and no train-meta was provided."
-                )
 
     if features_test:
         ctx.feat_test = features_test.resolve()
