@@ -131,7 +131,7 @@ from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import List, Sequence
-
+import pandas as pd
 import click
 
 # ---------------------------------------------------------------------------
