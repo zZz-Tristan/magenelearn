@@ -368,7 +368,7 @@ def train_model(ctx: Context) -> None:
         cmd.extend(["--lr-penalty", ctx.lr_penalty])
     run(cmd, cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run, stream=True)
     if ctx.model == "LR":
-        ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.lr_penalty}_{ctx.upsample}.joblib"
+        ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}.joblib"
     else:
         ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
 
@@ -376,13 +376,17 @@ def train_model(ctx: Context) -> None:
 def evaluate_train(ctx: Context) -> None:
     d = ctx.step_dir(6, "train_eval")
     script = STEPS_DIR / "05_evaluate_model.py"
+
+    # ✅ Normalize LR penalty for consistent naming
+    lr_penalty = ctx.lr_penalty if ctx.model == "LR" else "none"
+
     run([
         sys.executable, str(script),
         "--model", str(ctx.model_file),
         "--features", str(ctx.feat_train),
         "--n_splits", str(ctx.n_splits_cv),
         "--output_dir", str(d),
-        "--name", ctx.name + "_train",
+        "--name", f"{ctx.name}_{ctx.model}_{ctx.upsample}_{lr_penalty}_train",
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring,
@@ -394,13 +398,16 @@ def evaluate_holdout(ctx: Context, skip_shap: bool = False, skip_svm_importance:
         return  # nothing to do
     d = ctx.step_dir(7, "test_eval")
     script = STEPS_DIR / "05_evaluate_model.py"
+    # ✅ Normalize LR penalty for consistent naming
+    lr_penalty = ctx.lr_penalty if ctx.model == "LR" else "none"
+
     cmd = [
         sys.executable, str(script),
         "--model", str(ctx.model_file),
         "--features", str(ctx.feat_test),
         "--no_cv",
         "--output_dir", str(d),
-        "--name", ctx.name + "_test",
+        "--name", f"{ctx.name}_test",
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring
@@ -662,11 +669,6 @@ def test(click_ctx: click.Context, *,
     if full_features and not predict_only and not test_metadata:
         raise click.UsageError("--features also needs --test-metadata unless using --predict-only")
 
-    # if full_features and not (muvr_file and test_metadata):
-    #     raise click.UsageError(
-    #         "--features also needs --muvr-file and --test-metadata."
-    #     )
-
     #2 - Basic context
     base = output_dir or Path(datetime.now().strftime("%y%m%d_%H%M"))
     base.mkdir(parents=True, exist_ok=True)
@@ -711,25 +713,47 @@ def test(click_ctx: click.Context, *,
 
         run(cmd, cwd=d, log=d / "extract_test.log", dry=ctx.dry_run)
         ctx.feat_test = (d / f"{name}_test.tsv").resolve()
-        # run([
-        #     sys.executable, str(script),
-        #     "--muvr_file", str(muvr_file.resolve()),
-        #     "--chisq_file", str(ctx.full_matrix),
-        #     "--test_metadata", str(test_metadata.resolve()),
-        #     "--output_dir", str(d),
-        #     "--label", label,
-        #     "--group_column", group_column,
-        #     "--name", name
-        # ], cwd=d, log=d / "extract_test.log",
-        #     dry=ctx.dry_run)
-
-        # ctx.feat_test = (d / f"{name}_test.tsv").resolve()
 
         # ── 4. branch B – ready table supplied ---------------------------------
     else:
         ctx.feat_test = ready_features.resolve()
 
         # ── 5. evaluate --------------------------------------------------------
+
+    model_stem = ctx.model_file.stem
+    parts = model_stem.split("_")
+
+    # Defaults
+    ctx.model = "NA"
+    ctx.lr_penalty = "none"
+    ctx.upsample = "none"
+
+    # Parse from the right according to your scheme:
+    # ... <MODEL> <UPSAMPLE>                (non-LR)
+    # ... <MODEL> <LRPENALTY> <UPSAMPLE>    (LR)
+    if len(parts) >= 2:
+        last = parts[-1]           # always UPSAMPLE
+        second_last = parts[-2]    # MODEL (non-LR) OR LRPENALTY (LR)
+
+    # Check if it's LR by seeing if there's a penalty token
+        if last in {"l1", "l2", "elasticnet"} and len(parts) >= 3:
+            # LR case: [..., MODEL, LRPENALTY, UPSAMPLE]
+            ctx.model = parts[-3]
+            ctx.lr_penalty = last
+            ctx.upsample = second_last
+        else:
+            # Non-LR case: [..., MODEL, UPSAMPLE]
+            ctx.model = second_last
+            ctx.upsample = last
+            ctx.lr_penalty = "none"
+
+        # Now compose the evaluation name by fusing the user-provided --name
+    ctx.name = f"{name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}".replace("__", "_")
+
+    click.echo(
+        f"Composed evaluation name ➜ {ctx.name} "
+        f"(model={ctx.model}, lr_penalty={ctx.lr_penalty}, upsample={ctx.upsample})"
+    )
 
     if predict_only:
         d = ctx.step_dir(7, "test_eval")
