@@ -164,6 +164,7 @@ class Context:
     dropout_rate: float = 0.9
     n_jobs: int = -1
     lr_penalty: str = "l2"
+    xgb_policy: str = "depthwise"
 
 
     # artefacts populated as we go
@@ -363,6 +364,7 @@ def train_model(ctx: Context) -> None:
         "--scoring", ctx.scoring,
         "--n_splits",str(ctx.n_splits_cv),
         "--n-jobs", str(ctx.n_jobs),
+        "--xgb-policy", ctx.xgb_policy,
     ]
     if ctx.model == "LR":
         cmd.extend(["--lr-penalty", ctx.lr_penalty])
@@ -444,6 +446,7 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--muvr-model","muvr_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR feature-selection step ""(defaults to the value of --model)")
 @click.option("--upsampling", type=click.Choice(["none", "smote", "random"]), default="none")
 @click.option("--lr-penalty", type=click.Choice(["l1", "l2", "elasticnet"]), default="l2",help="Penalty type for Logistic Regression (default: l2)")
+@click.option("--xgb-policy", type=click.Choice(["depthwise", "lossguide"]), default="depthwise", help="Tree growth policy for XGBoost models (ignored for other models).")
 @click.option("--n-splits", "n_splits", default=5, show_default=True,  help="Number of folds used in the initial train/test split (Step 00)")
 @click.option("--n-splits-cv", "n_splits_cv", default=7, show_default=True, help="Number of CV folds used in training evaluation (Step 06)")
 @click.option("--output-dir", type=click.Path(path_type=Path))
@@ -466,6 +469,7 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
               help="Number of parallel jobs for feature selection and model training (default: -1, all cores)")
 @click.option("--feature-selection-only", is_flag=True,
               help="Run up to Step 03 (Chi²+MUVR/extract_features) and exit without training a model.")
+
 @click.pass_context
 
 def train(click_ctx: click.Context, *,
@@ -500,6 +504,7 @@ def train(click_ctx: click.Context, *,
           label:        str,
           group_column: str,
           dropout_rate: float,
+          xgb_policy: str,
           n_jobs: int,
           output_dir:   Path | None) -> None:
     """Train model end-to-end, with optional Chi² + MUVR feature selection."""
@@ -548,6 +553,7 @@ def train(click_ctx: click.Context, *,
         n_jobs=n_jobs,
         dropout_rate=dropout_rate,
         lr_penalty=lr_penalty,
+        xgb_policy=xgb_policy,
     )
 
     # -------------------------------------------- ingest pre-existing artefacts
