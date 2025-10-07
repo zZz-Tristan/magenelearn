@@ -111,6 +111,8 @@ def parse_arguments():
                         help='Number of parallel jobs for CV and model training (default: -1 = all cores)')
     parser.add_argument('--lr-penalty', choices=['l1', 'l2', 'elasticnet'], default='l2',
                         help='Penalty type for Logistic Regression (default: l2)')
+    parser.add_argument('--xgb-policy', choices=['depthwise', 'lossguide'], default='depthwise',
+                        help='Tree growth policy for XGBoost (default: depthwise)')
     return parser.parse_args()
 
 def load_data(path, label_col, group_col):
@@ -125,7 +127,7 @@ def load_data(path, label_col, group_col):
     return X, y, groups
 
 
-def prepare_pipeline(model_key, sampling, n_jobs, lr_penalty="l2"):
+def prepare_pipeline(model_key, sampling, n_jobs, lr_penalty="l2",xgb_policy="depthwise"):
     steps = []
     if sampling == "random":
         steps.append(("oversampler", RandomOverSampler(random_state=RSEED)))
@@ -135,12 +137,23 @@ def prepare_pipeline(model_key, sampling, n_jobs, lr_penalty="l2"):
     if model_key == "RFC":
         estimator = RandomForestClassifier(random_state=RSEED, n_jobs=n_jobs)
     elif model_key == "XGBC":
-        estimator = XGBClassifier(
-            random_state=RSEED,
-            n_jobs=n_jobs,  # let joblib handle outer CV parallelism
-            use_label_encoder=False,
-            eval_metric="logloss",
-        )
+        if xgb_policy == "lossguide":
+            estimator = XGBClassifier(
+                random_state=RSEED,
+                n_jobs=n_jobs,
+                tree_method="hist",
+                grow_policy="lossguide",
+                max_depth=0,  # required when using max_leaves
+                use_label_encoder=False,
+                eval_metric="logloss",
+            )
+        else:
+            estimator = XGBClassifier(
+                random_state=RSEED,
+                n_jobs=n_jobs,  # let joblib handle outer CV parallelism
+                use_label_encoder=False,
+                eval_metric="logloss",
+            )
 
     elif model_key == "SVM":
         estimator = SVC(random_state=RSEED, probability=True)  # probability=True for ROC/AUC support
@@ -170,17 +183,30 @@ def get_cv_splits(X, y, groups, n_splits):
 
 def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling,n_jobs):
     if model_key == "XGBC":
-        params = {
-            "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 2000, step=200),
-            "model__learning_rate": trial.suggest_float("model__learning_rate", 0.005, 0.2, log=True),
-            "model__max_depth": trial.suggest_int("model__max_depth", 3, 7),
-            "model__min_child_weight": trial.suggest_int("model__min_child_weight", 1, 50),
-            "model__gamma": trial.suggest_float("model__gamma", 0, 5),
-            "model__subsample": trial.suggest_float("model__subsample", 0.5, 1.0),
-            "model__colsample_bytree": trial.suggest_float("model__colsample_bytree", 0.5, 1.0),
-            "model__reg_alpha": trial.suggest_float("model__reg_alpha", 1e-8, 10.0, log=True),
-            "model__reg_lambda": trial.suggest_float("model__reg_lambda", 1e-8, 10.0, log=True),
-        }
+        if hasattr(pipeline.named_steps["model"], "grow_policy") and pipeline.named_steps["model"].grow_policy == "lossguide":
+            params = {
+                "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 2000, step=200),
+                "model__learning_rate": trial.suggest_float("model__learning_rate", 0.005, 0.2, log=True),
+                "model__max_leaves": trial.suggest_int("model__max_leaves", 16, 64, step=8),
+                "model__min_child_weight": trial.suggest_int("model__min_child_weight", 1, 50),
+                "model__gamma": trial.suggest_float("model__gamma", 0, 5),
+                "model__subsample": trial.suggest_float("model__subsample", 0.5, 1.0),
+                "model__colsample_bytree": trial.suggest_float("model__colsample_bytree", 0.5, 1.0),
+                "model__reg_alpha": trial.suggest_float("model__reg_alpha", 1e-8, 10.0, log=True),
+                "model__reg_lambda": trial.suggest_float("model__reg_lambda", 1e-8, 10.0, log=True),
+            }
+        else:
+            params = {
+                "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 2000, step=200),
+                "model__learning_rate": trial.suggest_float("model__learning_rate", 0.005, 0.2, log=True),
+                "model__max_depth": trial.suggest_int("model__max_depth", 3, 7),
+                "model__min_child_weight": trial.suggest_int("model__min_child_weight", 1, 50),
+                "model__gamma": trial.suggest_float("model__gamma", 0, 5),
+                "model__subsample": trial.suggest_float("model__subsample", 0.5, 1.0),
+                "model__colsample_bytree": trial.suggest_float("model__colsample_bytree", 0.5, 1.0),
+                "model__reg_alpha": trial.suggest_float("model__reg_alpha", 1e-8, 10.0, log=True),
+                "model__reg_lambda": trial.suggest_float("model__reg_lambda", 1e-8, 10.0, log=True),
+            }
     elif model_key == "RFC":  # RFC
         params = {
             "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 1500, step=100),
@@ -292,7 +318,7 @@ def main():
     if args.sampling == 'smote' and issparse(X):
         sys.exit("Error: SMOTE cannot be applied to a sparse matrix. Densify first.")
 
-    pipeline = prepare_pipeline(args.model, args.sampling, args.n_jobs,lr_penalty=args.lr_penalty)
+    pipeline = prepare_pipeline(args.model, args.sampling, args.n_jobs,lr_penalty=args.lr_penalty, xgb_policy=args.xgb_policy)
     cv_splits = get_cv_splits(X, y, groups, args.n_splits)
 
     print("Starting Optuna hyperparameter optimization...")
