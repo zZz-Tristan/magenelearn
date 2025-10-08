@@ -332,8 +332,8 @@ def main():
 
     if args.model == "LR":
         model_path = os.path.join(args.output_model,
-                                  f"{args.name}_{args.model}_{args.lr_penalty}_{args.sampling}.joblib")
-        cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.lr_penalty}_{args.sampling}.tsv")
+                                  f"{args.name}_{args.model}_{args.sampling}_{args.lr_penalty}.joblib")
+        cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.sampling}_{args.lr_penalty}.tsv")
 
     else:
         model_path = os.path.join(args.output_model, f"{args.name}_{args.model}_{args.sampling}.joblib")
