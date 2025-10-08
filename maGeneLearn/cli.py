@@ -388,7 +388,7 @@ def evaluate_train(ctx: Context) -> None:
         "--features", str(ctx.feat_train),
         "--n_splits", str(ctx.n_splits_cv),
         "--output_dir", str(d),
-        "--name", f"{ctx.name}_{ctx.model}_{ctx.upsample}_{lr_penalty}_train",
+        "--name", f"{ctx.name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}_train",
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring,
