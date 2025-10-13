@@ -395,7 +395,7 @@ def evaluate_train(ctx: Context) -> None:
     ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run, stream=True)
 
 
-def evaluate_holdout(ctx: Context, skip_shap: bool = False, skip_svm_importance: bool = False) -> None:
+def evaluate_holdout(ctx: Context, skip_svm_importance: bool = False) -> None:
     if not ctx.feat_test:
         return  # nothing to do
     d = ctx.step_dir(7, "test_eval")
@@ -414,8 +414,6 @@ def evaluate_holdout(ctx: Context, skip_shap: bool = False, skip_svm_importance:
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring
     ]
-    if skip_shap:
-        cmd.append("--skip-shap")
     if skip_svm_importance:
         cmd.append("--skip-svm-importance")
     run(cmd, cwd=d, log=d / "eval_test.log", dry=ctx.dry_run, stream=True)
@@ -658,7 +656,6 @@ def test(click_ctx: click.Context, *,
          muvr_file: Path | None,
          test_metadata : Path | None,
          predict_only: bool,
-         skip_shap: bool,
          skip_svm_importance: bool) -> None:
 
     #1. Sanity check
@@ -774,13 +771,11 @@ def test(click_ctx: click.Context, *,
             "--scoring", ctx.scoring,
             "--name", ctx.name + "_test",
         ]
-        if skip_shap:
-            cmd.append("--skip-shap")
         run(cmd, cwd=d, log=d / "predict.log", dry=ctx.dry_run)
         if skip_svm_importance:
             cmd.append("--skip-svm-importance")
     else:
-        evaluate_holdout(ctx, skip_shap=skip_shap, skip_svm_importance=skip_svm_importance)
+        evaluate_holdout(ctx, skip_svm_importance=skip_svm_importance)
 
     #evaluate_holdout(ctx)
     click.echo("\n✅ Test evaluation complete.")
