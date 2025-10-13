@@ -67,11 +67,14 @@ from sklearn.metrics import (
     balanced_accuracy_score,
     classification_report,
     confusion_matrix,
+    matthews_corrcoef,
+    average_precision_score
 )
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.utils import compute_sample_weight
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import label_binarize
 
 import xgboost as xgb
 
@@ -228,58 +231,8 @@ def run_evaluation(
             # Raw classifier instance
             model_step = pipeline
 
-        #tree-based models
-        if hasattr(model_step, 'feature_importances_'):
-            feature_imps.append(
-                pd.Series(model_step.feature_importances_, index=X.columns)
-            )
-
-        #Logistic regression
-        elif isinstance(model_step, LogisticRegression):
-            logging.info("Extracting coefficients as feature importance for Logistic Regression.")
-            # For multinomial: coef_.shape = (n_classes, n_features)
-            # Take mean of absolute values across classes
-            coefs = np.mean(np.abs(model_step.coef_), axis=0)
-            fi = pd.Series(coefs, index=X.columns)
-            feature_imps.append(fi)
-        elif model_step.__class__.__name__ == "SVC":
-            if skip_svm_importance:
-                logging.info("Skipping permutation importance for SVM because --skip-svm-importance was set.")
-            else:
-                logging.info("Computing permutation importance for SVM (subset of features).")
-                if hasattr(model_step, "feature_names_in_"):
-                    X_aligned = X.reindex(columns=model_step.feature_names_in_, fill_value=0)
-                else:
-                    X_aligned = X
-
-                N_TOP = min(500, X_aligned.shape[1])  # cap at 500 features
-                top_features = X_aligned.iloc[:, :N_TOP]
-                result = permutation_importance(
-                    pipeline, top_features, y,
-                    n_repeats=10,
-                    random_state=RSEED,
-                    n_jobs=-1,
-                    scoring=scoring
-                )
-                fi = pd.Series(result.importances_mean, index=top_features.columns)
-                feature_imps.append(fi)
-        else:
-            logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
-
-        if hasattr(model_step, "feature_names_in_"):
-            X = X.reindex(columns=model_step.feature_names_in_, fill_value=0)
-
-	#SHAP is optional
-        if not skip_shap:
-        # SHAP only for tree-based models
-            if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
-                shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X))
-            elif isinstance(model_step, LogisticRegression):
-                logging.info("Skipping SHAP: Logistic Regression not supported (use coefficients instead).")
-            else:
-                logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
-        else:
-            logging.info("Skipping SHAP because --skip-shap was set.")
+        # Skip feature importance and SHAP in test-set evaluation
+        logging.info("Skipping feature importance and SHAP in test evaluation mode.")
     else:
         if n_splits is None:
             raise ValueError("n_splits required when CV enabled")
@@ -388,6 +341,36 @@ def run_evaluation(
     report_df = pd.DataFrame(classification_report(y_true_str, y_pred_str, output_dict=True)).T.reset_index()
     cm_arr = confusion_matrix(y_true_str, y_pred_str, labels=class_names)
     cm_df = pd.DataFrame(cm_arr, index=class_names, columns=class_names)
+
+    # ───────────────────────────── MCC and AUPRC ─────────────────────────────
+    logging.info("Computing additional metrics: MCC and AUPRC (per-class, macro, micro)")
+
+    mcc = matthews_corrcoef(y_true_str, y_pred_str)
+    y_true_bin = label_binarize(y_true_str, classes=class_names)
+    y_score = proba_df[class_names].values
+    # --- Per-class AUPRC ---
+    auprc_per_class = {
+        cls: average_precision_score(y_true_bin[:, i], y_score[:, i])
+        for i, cls in enumerate(class_names)
+    }
+
+    # --- Macro and micro AUPRC ---
+    auprc_macro = np.mean(list(auprc_per_class.values()))
+    auprc_micro = average_precision_score(y_true_bin.ravel(), y_score.ravel())
+
+    # --- Assemble results ---
+    auprc_mcc = {
+        "MCC": round(mcc, 4),
+        "Macro_AUPRC": round(auprc_macro, 4),
+        "Micro_AUPRC": round(auprc_micro, 4),
+        **{f"AUPRC_{cls}": round(v, 4) for cls, v in auprc_per_class.items()},
+    }
+
+    auprc_mcc_df = pd.DataFrame([auprc_mcc])
+    auprc_mcc_path = output_dir / f"{name}_mcc_auprc.tsv"
+    auprc_mcc_df.to_csv(auprc_mcc_path, sep="\t", index=False)
+    logging.info("Extra metrics written to ➜ %s", extra_metrics_path)
+
 
     if feature_imps:
         fi_df = pd.concat(feature_imps, axis=1)
