@@ -166,7 +166,6 @@ def run_evaluation(
     fasta: bool,
     scoring: str,
     predict_only: bool = False,
-    skip_shap: bool = False,
     skip_svm_importance: bool = False,
 ) -> None:
     """Grouped‑CV evaluation: predictions, metrics, feature importances, SHAP."""
@@ -479,7 +478,6 @@ def parse_args():
     p.add_argument("--fasta", action="store_true", help = "If set, write a FASTA file of features sorted by importance")
     p.add_argument("--predict_only", action="store_true",help="Only output predictions without evaluating performance.")
     p.add_argument("--scoring",  type=str,help="Scoring parameter for best model")
-    p.add_argument("--skip-shap", action="store_true", help="Skip SHAP value computation")
     p.add_argument("--skip-svm-importance", action="store_true", help="Skip permutation importance calculation for SVM models.")
     return p.parse_args()
 
@@ -504,7 +502,6 @@ def main():
             fasta=args.fasta,
             predict_only=args.predict_only,
             scoring=args.scoring,
-            skip_shap=args.skip_shap,
             skip_svm_importance=args.skip_svm_importance,
         )
     except Exception:
