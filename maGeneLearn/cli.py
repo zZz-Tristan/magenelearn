@@ -640,7 +640,6 @@ def train(click_ctx: click.Context, *,
 @click.option("--predict-only", is_flag=True, help="Only output predictions without computing performance metrics.")
 @click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
-@click.option("--skip-shap", is_flag=True, help="Skip SHAP value computation during evaluation.")
 @click.option("--skip-svm-importance", is_flag=True, help="Skip permutation importance for SVM models.")
 @click.pass_context
 
