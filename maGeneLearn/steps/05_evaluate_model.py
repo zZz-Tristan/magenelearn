@@ -368,7 +368,7 @@ def run_evaluation(
     auprc_mcc_df = pd.DataFrame([auprc_mcc])
     auprc_mcc_path = output_dir / f"{name}_mcc_auprc.tsv"
     auprc_mcc_df.to_csv(auprc_mcc_path, sep="\t", index=False)
-    logging.info("Extra metrics written to ➜ %s", extra_metrics_path)
+    logging.info("Extra metrics written to ➜ %s", auprc_mcc_path)
 
 
     if feature_imps:
