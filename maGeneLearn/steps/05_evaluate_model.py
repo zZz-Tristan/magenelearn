@@ -203,7 +203,13 @@ def run_evaluation(
     le = LabelEncoder()
     y_raw = df[label_col].values
     y = le.fit_transform(y_raw)
-    class_names = list(le.classes_)
+
+    if hasattr(pipeline, "classes_"):
+        class_names = list(pipeline.classes_)
+    elif hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
+        class_names = list(pipeline.named_steps["model"].classes_)
+    else:
+        class_names = list(le.classes_)
 
     X = df.drop(columns=[label_col, group_col])
     groups = df[group_col].values
