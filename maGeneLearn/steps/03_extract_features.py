@@ -119,6 +119,14 @@ def extract_selected_columns(chisq_path: Path,
     # 3️⃣  convert only the k-mer columns
     df.iloc[:, :] = df.iloc[:, :].astype("int8")
 
+# We'll fill these missing columns with zeros later, so the model input shape is preserved.
+
+
+    for col in missing:
+        df[col] = 0
+
+    df = df.reindex(columns=selected_cols, fill_value=0)
+
     return df
 
 def load_selected(muvr_path, label_col):
