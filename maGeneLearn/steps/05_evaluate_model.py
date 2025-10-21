@@ -178,6 +178,42 @@ def run_evaluation(
     logging.info("Loading model ➜ %s", model_path)
     pipeline = joblib.load(model_path)  # imblearn.Pipeline or estimator
 
+    # ---------------------------------------------------------------
+    # Handle case where model was saved as {"model": pipeline, "label_encoder": le}
+    # ---------------------------------------------------------------
+    if isinstance(pipeline, dict) and "label_encoder" in pipeline:
+        le_model = pipeline["label_encoder"]
+        pipeline = pipeline["model"]
+
+        # Convert model’s classes_ from numeric (0,1,2,...) back to string labels
+        model_classes = [str(c) for c in le_model.classes_]
+        logging.info("Loaded LabelEncoder with classes: %s", model_classes)
+
+        if hasattr(pipeline, "classes_"):
+            pipeline.classes_ = np.array(model_classes)
+        elif hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
+            model_step = pipeline.named_steps["model"]
+            if hasattr(model_step, "classes_"):
+               model_step.classes_ = np.array(model_classes)
+
+        # Optional sanity check
+        logging.info("Model classes normalized to string labels.")
+# --------------------------------------------------------------- 
+
+    else:
+        # Some models (older XGBC or RFC) have numeric-only classes_
+        if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
+            model_step = pipeline.named_steps["model"]
+            if hasattr(model_step, "classes_") and np.issubdtype(type(model_step.classes_[0]), np.number):
+                logging.warning("Old pipeline model detected – converting numeric classes to strings.")
+                model_step.__dict__["classes_"] = np.array([str(c) for c in model_step.classes_])
+
+        elif hasattr(pipeline, "classes_") and np.issubdtype(type(pipeline.classes_[0]), np.number):
+            logging.warning("Old model detected – converting numeric classes to strings.")
+            pipeline.__dict__["classes_"] = np.array([str(c) for c in pipeline.classes_])
+
+
+#Load feature matrix
     logging.info("Reading feature matrix ➜ %s", features_tsv)
     df = pd.read_csv(features_tsv, sep="\t", index_col=0)
 
@@ -202,14 +238,19 @@ def run_evaluation(
     # Encode string labels to integers
     le = LabelEncoder()
     y_raw = df[label_col].values
-    y = le.fit_transform(y_raw)
+    
 
     if hasattr(pipeline, "classes_"):
+        le.classes_ = np.array(pipeline.classes_)
         class_names = list(pipeline.classes_)
     elif hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
+        le.classes_ = np.array(pipeline.named_steps["model"].classes_)
         class_names = list(pipeline.named_steps["model"].classes_)
     else:
+        le.fit(y_raw)
         class_names = list(le.classes_)
+
+    y = np.array([np.where(le.classes_ == label)[0][0] if label in le.classes_ else -1 for label in y_raw])
 
     X = df.drop(columns=[label_col, group_col])
     groups = df[group_col].values
@@ -343,7 +384,25 @@ def run_evaluation(
     bacc = balanced_accuracy_score(y_true_str, y_pred_str)
     logging.info("OOF Accuracy %.4f | Balanced Accuracy %.4f", acc, bacc)
 
-    report_df = pd.DataFrame(classification_report(y_true_str, y_pred_str, output_dict=True)).T.reset_index()
+    report_dict = classification_report(y_true_str, y_pred_str, output_dict=True, zero_division=0)
+    report_df= pd.DataFrame(report_dict).T.reset_index()
+
+    # Adjust macro avg to include only classes with support > 0
+    # ────────────────────────────────────────────────
+    # Identify only those rows that correspond to actual classes
+    mask_classes = report_df["index"].isin(np.unique(y_true_str))
+    nonzero_classes = report_df[mask_classes & (report_df["support"] > 0)]
+
+    if not nonzero_classes.empty:
+        macro_prec = nonzero_classes["precision"].mean()
+        macro_rec = nonzero_classes["recall"].mean()
+        macro_f1 = nonzero_classes["f1-score"].mean()
+
+        report_df.loc[report_df["index"] == "macro avg", ["precision", "recall", "f1-score"]] = [macro_prec, macro_rec, macro_f1]
+
+    # Optional cleanup: remove zero-support classes for cleaner reporting
+    report_df = report_df[~((report_df["support"] == 0) & (report_df["index"].isin(le.classes_)))]
+
     cm_arr = confusion_matrix(y_true_str, y_pred_str, labels=class_names)
     cm_df = pd.DataFrame(cm_arr, index=class_names, columns=class_names)
 
