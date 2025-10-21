@@ -185,35 +185,49 @@ def run_evaluation(
         le_model = pipeline["label_encoder"]
         pipeline = pipeline["model"]
 
-        # Convert model’s classes_ from numeric (0,1,2,...) back to string labels
-        model_classes = [str(c) for c in le_model.classes_]
-        logging.info("Loaded LabelEncoder with classes: %s", model_classes)
+        if le_model is not None:
+            model_classes = [str(c) for c in le_model.classes_]
+            logging.info("Loaded LabelEncoder with classes: %s", model_classes)
 
-        if hasattr(pipeline, "classes_"):
-            pipeline.classes_ = np.array(model_classes)
-        elif hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
-            model_step = pipeline.named_steps["model"]
-            if hasattr(model_step, "classes_"):
-               model_step.classes_ = np.array(model_classes)
+            # Apply to inner model or top level
+            if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
+                pipeline.named_steps["model"].__dict__["classes_"] = np.array(model_classes)
+            elif hasattr(pipeline, "classes_"):
+                pipeline.__dict__["classes_"] = np.array(model_classes)
 
-        # Optional sanity check
-        logging.info("Model classes normalized to string labels.")
-# --------------------------------------------------------------- 
+            logging.info("Model classes normalized to string labels.")
 
+    # ---------------------------------------------------------------
+    # Handle legacy models (no encoder, numeric classes)
+    # ---------------------------------------------------------------
     else:
-        # Some models (older XGBC or RFC) have numeric-only classes_
-        if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
-            model_step = pipeline.named_steps["model"]
-            if hasattr(model_step, "classes_") and np.issubdtype(type(model_step.classes_[0]), np.number):
-                logging.warning("Old pipeline model detected – converting numeric classes to strings.")
-                model_step.__dict__["classes_"] = np.array([str(c) for c in model_step.classes_])
-
-        elif hasattr(pipeline, "classes_") and np.issubdtype(type(pipeline.classes_[0]), np.number):
+        model_step = (
+            pipeline.named_steps["model"]
+            if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps
+            else pipeline
+        )
+        if hasattr(model_step, "classes_") and np.issubdtype(type(model_step.classes_[0]), np.number):
             logging.warning("Old model detected – converting numeric classes to strings.")
-            pipeline.__dict__["classes_"] = np.array([str(c) for c in pipeline.classes_])
+            model_step.__dict__["classes_"] = np.array([str(c) for c in model_step.classes_])
 
+    # ---------------------------------------------------------------
+    # Build consistent LabelEncoder from the model’s classes
+    # ---------------------------------------------------------------
+    model_step = (
+        pipeline.named_steps["model"]
+        if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps
+        else pipeline
+    )
+    le = LabelEncoder()
+    if hasattr(model_step, "classes_"):
+        le.classes_ = np.array(model_step.classes_)
+        class_names = list(model_step.classes_)
+        logging.info("LabelEncoder rebuilt from model classes: %s", class_names)
+    else:
+        le = None
+        class_names = []
 
-#Load feature matrix
+    #Load feature matrix
     logging.info("Reading feature matrix ➜ %s", features_tsv)
     df = pd.read_csv(features_tsv, sep="\t", index_col=0)
 
@@ -231,26 +245,30 @@ def run_evaluation(
         logging.info("Predictions written to ➜ %s", output_file)
         return
 
-
     if label_col not in df.columns or group_col not in df.columns:
         raise KeyError("label or group column missing in TSV header")
 
-    # Encode string labels to integers
-    le = LabelEncoder()
+    # 3️⃣  Encode labels --------------------------------------------------------
     y_raw = df[label_col].values
-    
+    if le is not None and hasattr(le, "classes_"):
+        # --- Diagnostic logging: check what the encoder sees ---
+        logging.info("Encoder classes: %s", list(le.classes_))
+        logging.info("Unique labels in test data: %s", np.unique(y_raw))
 
-    if hasattr(pipeline, "classes_"):
-        le.classes_ = np.array(pipeline.classes_)
-        class_names = list(pipeline.classes_)
-    elif hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
-        le.classes_ = np.array(pipeline.named_steps["model"].classes_)
-        class_names = list(pipeline.named_steps["model"].classes_)
+        unmatched = [lbl for lbl in np.unique(y_raw) if str(lbl) not in [str(c) for c in le.classes_]]
+        if unmatched:
+            logging.warning("Labels in test data not found in model classes: %s", unmatched)
+
+        # --- Make sure everything is compared as strings ---
+        le.classes_ = np.array([str(c) for c in le.classes_])
+        class_to_idx = {cls: i for i, cls in enumerate(le.classes_)}
+
+        y = np.array([class_to_idx.get(str(label), -1) for label in y_raw])
     else:
-        le.fit(y_raw)
+        le = LabelEncoder().fit(y_raw)
+        y = le.transform(y_raw)
         class_names = list(le.classes_)
-
-    y = np.array([np.where(le.classes_ == label)[0][0] if label in le.classes_ else -1 for label in y_raw])
+        logging.info("LabelEncoder fitted directly on input labels: %s", class_names)
 
     X = df.drop(columns=[label_col, group_col])
     groups = df[group_col].values
