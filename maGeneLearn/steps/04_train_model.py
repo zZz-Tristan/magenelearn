@@ -339,8 +339,11 @@ def main():
         model_path = os.path.join(args.output_model, f"{args.name}_{args.model}_{args.sampling}.joblib")
         cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.sampling}.tsv")
 
-
-    joblib.dump(best_model, model_path)
+    if args.model == "XGBC":
+        joblib.dump({"model": best_model, "label_encoder": le}, model_path)
+    else:
+        joblib.dump(best_model, model_path)
+        
     trials_df.to_csv(cv_path, sep="\t", index=False)
 
     print(f"Best params: {best_params}")
