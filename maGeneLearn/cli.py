@@ -379,8 +379,11 @@ def evaluate_train(ctx: Context) -> None:
     d = ctx.step_dir(6, "train_eval")
     script = STEPS_DIR / "05_evaluate_model.py"
 
-    # ✅ Normalize LR penalty for consistent naming
-    lr_penalty = ctx.lr_penalty if ctx.model == "LR" else "none"
+    # Build the name conditionally
+    if ctx.model == "LR":
+        eval_name = f"{ctx.name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}_train"
+    else:
+        eval_name = f"{ctx.name}_{ctx.model}_{ctx.upsample}_train"
 
     run([
         sys.executable, str(script),
@@ -388,7 +391,7 @@ def evaluate_train(ctx: Context) -> None:
         "--features", str(ctx.feat_train),
         "--n_splits", str(ctx.n_splits_cv),
         "--output_dir", str(d),
-        "--name", f"{ctx.name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}_train",
+        "--name", eval_name,
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring,
@@ -401,7 +404,6 @@ def evaluate_holdout(ctx: Context, skip_svm_importance: bool = False) -> None:
     d = ctx.step_dir(7, "test_eval")
     script = STEPS_DIR / "05_evaluate_model.py"
     # ✅ Normalize LR penalty for consistent naming
-    lr_penalty = ctx.lr_penalty if ctx.model == "LR" else "none"
 
     cmd = [
         sys.executable, str(script),
