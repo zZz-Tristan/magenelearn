@@ -213,19 +213,25 @@ def run_evaluation(
     # ---------------------------------------------------------------
     # Build consistent LabelEncoder from the model’s classes
     # ---------------------------------------------------------------
-    model_step = (
-        pipeline.named_steps["model"]
-        if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps
-        else pipeline
-    )
-    le = LabelEncoder()
-    if hasattr(model_step, "classes_"):
-        le.classes_ = np.array(model_step.classes_)
-        class_names = list(model_step.classes_)
-        logging.info("LabelEncoder rebuilt from model classes: %s", class_names)
+    # Only rebuild the encoder if we *didn't* load one from the artifact
+    if "le_model" in locals() and le_model is not None:
+        le = le_model
+        class_names = list(le.classes_)
+        logging.info("Using loaded LabelEncoder (classes: %s)", class_names)
     else:
-        le = None
-        class_names = []
+        model_step = (
+            pipeline.named_steps["model"]
+            if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps
+            else pipeline
+        )
+        le = LabelEncoder()
+        if hasattr(model_step, "classes_"):
+            le.classes_ = np.array(model_step.classes_)
+            class_names = list(model_step.classes_)
+            logging.info("LabelEncoder rebuilt from model classes: %s", class_names)
+        else:
+            le = None
+            class_names = []
 
     #Load feature matrix
     logging.info("Reading feature matrix ➜ %s", features_tsv)
