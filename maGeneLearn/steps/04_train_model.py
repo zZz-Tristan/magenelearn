@@ -59,6 +59,7 @@ import time
 import logging
 
 # --- Machine Learning ---
+from sklearn.base import clone
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
@@ -182,8 +183,9 @@ def get_cv_splits(X, y, groups, n_splits):
 
 
 def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling,n_jobs):
+    model = clone(pipeline)
     if model_key == "XGBC":
-        if hasattr(pipeline.named_steps["model"], "grow_policy") and pipeline.named_steps["model"].grow_policy == "lossguide":
+        if hasattr(model.named_steps["model"], "grow_policy") and model.named_steps["model"].grow_policy == "lossguide":
             params = {
                 "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 2000, step=200),
                 "model__learning_rate": trial.suggest_float("model__learning_rate", 0.005, 0.2, log=True),
@@ -229,7 +231,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
         params = {
             "model__C": trial.suggest_float("model__C", 1e-3, 1e3, log=True),
         }
-        if pipeline.named_steps["model"].penalty == "elasticnet":
+        if model.named_steps["model"].penalty == "elasticnet":
             params["model__l1_ratio"] = trial.suggest_float("model__l1_ratio", 0.0, 1.0)
         if sampling == "none":
             params["model__class_weight"] = trial.suggest_categorical(
@@ -241,19 +243,19 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
 
 
 
-    pipeline.set_params(**params)
+    model.set_params(**params)
 
     start = time.time()
 
     if model_key == 'XGBC' and sampling == 'none':
         sw = compute_sample_weight("balanced", y)
         cv_results = cross_validate(
-            pipeline, X, y, groups=groups, cv=cv_splits,
+            model, X, y, groups=groups, cv=cv_splits,
             scoring=scoring, fit_params={"model__sample_weight": sw}, n_jobs=n_jobs
         )
     else:
         cv_results = cross_validate(
-            pipeline, X, y, groups=groups, cv=cv_splits,
+            model, X, y, groups=groups, cv=cv_splits,
             scoring=scoring, n_jobs=n_jobs
         )
 
@@ -290,7 +292,7 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
     trial_history = []
 
     def _objective(trial):
-        score, trial_data = optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling,n_jobs)
+        score, trial_data = optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling,n_jobs=1)
         trial_history.append(trial_data)
         
         return score
@@ -302,10 +304,11 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
     best_params = study.best_params
     best_score = study.best_value
 
-    pipeline.set_params(**best_params)
-    pipeline.fit(X, y)
+    final_model = clone(pipeline)
+    final_model.set_params(**best_params)
+    final_model.fit(X, y)
 
-    return pipeline, pd.DataFrame(trial_history), best_params, best_score
+    return final_model, pd.DataFrame(trial_history), best_params, best_score
 
 
 def main():
