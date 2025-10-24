@@ -752,7 +752,10 @@ def test(click_ctx: click.Context, *,
             ctx.lr_penalty = "none"
 
         # Now compose the evaluation name by fusing the user-provided --name
-    ctx.name = f"{name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}".replace("__", "_")
+    if ctx.model == "LR":
+        ctx.name = f"{name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}".replace("__", "_")
+    else:
+        ctx.name = f"{name}_{ctx.model}_{ctx.upsample}".replace("__", "_")
 
     click.echo(
         f"Composed evaluation name ➜ {ctx.name} "
