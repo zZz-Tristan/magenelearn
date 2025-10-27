@@ -382,6 +382,28 @@ def run_evaluation(
 
             # SHAP values only for tree-based models
             if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
+                # --- Diagnostic: check model vs. data alignment ---
+                logging.info(
+                    "DEBUG SHAP | model: %s | X_te shape: %s | n_features_in_: %s",
+                    type(model_step).__name__,
+                    X_te.shape,
+                    getattr(model_step, "n_features_in_", "NA")
+                )
+
+                if hasattr(model_step, "feature_names_in_"):
+                    model_feats = list(model_step.feature_names_in_)
+                    diff1 = set(model_feats) - set(X_te.columns)
+                    diff2 = set(X_te.columns) - set(model_feats)
+                    logging.info(
+                        "DEBUG SHAP | missing_in_X_te=%d | extra_in_X_te=%d",
+                        len(diff1),
+                        len(diff2)
+                    )
+                    if diff1:
+                        logging.warning("Features missing in X_te: %s", list(diff1)[:10])
+                    if diff2:
+                        logging.warning("Extra features in X_te: %s", list(diff2)[:10])
+                # --- End of diagnostic block ---
                 shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
             elif isinstance(model_step, LogisticRegression):
                 logging.info("Skipping SHAP: Logistic Regression not supported (use coefficients instead).")
