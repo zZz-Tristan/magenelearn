@@ -221,9 +221,9 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     selected_features = feature_selector.get_selected_features(feature_names=feature_names)
 
     # Obtain a dataframe containing MUVR selected features
-    df_muvr_min = model_input[[outcome_col]+list(selected_features.min)]
-    df_muvr_mid = model_input[[outcome_col]+list(selected_features.mid)]
-    df_muvr_max = model_input[[outcome_col]+list(selected_features.max)]
+    df_muvr_min = model_input[list(selected_features.min)]
+    df_muvr_mid = model_input[list(selected_features.mid)]
+    df_muvr_max = model_input[list(selected_features.max)]
 
     #Write features to a new file.
     os.makedirs(output_dir, exist_ok=True)
