@@ -23,7 +23,7 @@ magene-learn train [OPTIONS]
 | `--meta-file` | `*.tsv` | Sample metadata with at least **`outcome`** (label) and **`group`** columns |
 | `--features` | `*.tsv` | Primary k‑mer count matrix (samples × k‑mers) |
 | `--name`      | *string* | Prefix used to label every output artefact |
-| `--model`     | RFC \| XGBC | Choice of ML algorithm |
+| `--model`     | RFC \| XGBC \| SVM \| LR Choice of ML algorithm |
 
 ### Optional inputs / switches
 | Option | Purpose |
@@ -149,7 +149,7 @@ except (AttributeError, ModuleNotFoundError):
 class Context:
     base_dir: Path
     name: str
-    model: str  # "RFC" | "XGBC
+    model: str  # "RFC" | "XGBC" | "SVM"
     muvr_model: str
     upsample: str  # "none" | "smote" | "random"
     n_splits: int
@@ -161,6 +161,10 @@ class Context:
     scoring: str = "balanced_accuracy"
     k: int = 100000
     lineage_col: str = "LINEAGE"
+    dropout_rate: float = 0.9
+    n_jobs: int = -1
+    lr_penalty: str = "l2"
+    xgb_policy: str = "depthwise"
 
 
     # artefacts populated as we go
@@ -188,17 +192,34 @@ class Context:
 # Helper to run external scripts
 # ---------------------------------------------------------------------------
 
-def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, dry: bool) -> None:
+def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, stream: bool = False, dry: bool) -> None:
     click.echo(f"\n>>> {' '.join(cmd)} (cwd={cwd})")
     if dry:
         return
 
-    res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    log.write_text(res.stdout + res.stderr)
-    if res.returncode != 0:
-        click.echo(res.stderr, err=True)
-        click.echo(f"Step failed – see log {log}", err=True)
-        sys.exit(res.returncode)
+    if stream:
+        # live stream to screen + save to log
+        with open(log, "w") as lf:
+            proc = subprocess.Popen(
+                cmd, cwd=cwd,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                click.echo(line, nl=False)
+                lf.write(line)
+            ret = proc.wait()
+        if ret != 0:
+            click.echo(f"Step failed – see log {log}", err=True)
+            sys.exit(ret)
+    else:
+        res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+        log.write_text(res.stdout + res.stderr)
+        if res.returncode != 0:
+            click.echo(res.stderr, err=True)
+            click.echo(f"Step failed – see log {log}", err=True)
+            sys.exit(res.returncode)
 
 # ---------------------------------------------------------------------------
 # Individual pipeline steps (still shelling out to 00–05 scripts)
@@ -231,10 +252,11 @@ def chisq(ctx: Context, features: Path, features2: Path | None) -> None:
                       "--k", str(ctx.k),
                       "--name", ctx.name,
                       "--label", ctx.label,  # pass custom column names
+                      "--n_jobs", str(ctx.n_jobs)
                       ]
     if features2:
         cmd += ["--features2", str(features2.resolve())]
-    run(cmd, cwd=d, log=d / "chisq.log", dry=ctx.dry_run)
+    run(cmd, cwd=d, log=d / "chisq.log", dry=ctx.dry_run, stream=True)
     ctx.chisq_file = (d / f"{ctx.name}_top{ctx.k}_features.tsv").resolve()
 
 
@@ -259,8 +281,10 @@ def muvr(ctx: Context) -> None:
         "--group_col", ctx.group_col,
         "--outcome_col", ctx.label,
         "--filtered_train_dir", str(tmp_dir),
-        "--name", ctx.name
-    ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run)
+        "--name", ctx.name,
+        "--features-dropout-rate", str(ctx.dropout_rate),
+        "--n-jobs", str(ctx.n_jobs)
+    ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run, stream=True)
 
     matches = sorted(d.glob(f"{ctx.name}_muvr_{ctx.muvr_model}_min.tsv"))
     if not matches:
@@ -300,7 +324,7 @@ def extract_features(ctx: Context) -> None:
         if ctx.test_meta:
             cmd += ["--test_metadata", str(ctx.test_meta)]
 
-        run(cmd, cwd=d, log=d / "extract.log", dry=ctx.dry_run)
+        run(cmd, cwd=d, log=d / "extract.log", dry=ctx.dry_run, stream=True)
 
         # store absolute paths for downstream steps
         ctx.feat_train = (d / f"{ctx.name}_train.tsv").resolve()
@@ -327,7 +351,7 @@ def train_model(ctx: Context) -> None:
     d_model = ctx.step_dir(4, "model")
     d_cv = ctx.step_dir(5, "cv")
     script = STEPS_DIR / "04_train_model.py"
-    run([
+    cmd = [
         sys.executable, str(script),
         "--features", str(ctx.feat_train),
         "--model", ctx.model, "--sampling", ctx.upsample,
@@ -337,41 +361,64 @@ def train_model(ctx: Context) -> None:
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--n_iter", str(ctx.n_iter),
-        "--scoring", ctx.scoring
-    ], cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run)
-    ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
+        "--scoring", ctx.scoring,
+        "--n_splits",str(ctx.n_splits_cv),
+        "--n-jobs", str(ctx.n_jobs),
+        "--xgb-policy", ctx.xgb_policy,
+    ]
+    if ctx.model == "LR":
+        cmd.extend(["--lr-penalty", ctx.lr_penalty])
+    run(cmd, cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run, stream=True)
+    if ctx.model == "LR":
+        ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}.joblib"
+    else:
+        ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
 
 
 def evaluate_train(ctx: Context) -> None:
     d = ctx.step_dir(6, "train_eval")
     script = STEPS_DIR / "05_evaluate_model.py"
+
+    # Build the name conditionally
+    if ctx.model == "LR":
+        eval_name = f"{ctx.name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}_train"
+    else:
+        eval_name = f"{ctx.name}_{ctx.model}_{ctx.upsample}_train"
+
     run([
         sys.executable, str(script),
         "--model", str(ctx.model_file),
         "--features", str(ctx.feat_train),
         "--n_splits", str(ctx.n_splits_cv),
         "--output_dir", str(d),
-        "--name", ctx.name + "_train",
+        "--name", eval_name,
         "--label", ctx.label,
-        "--group_column", ctx.group_col
-    ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run)
+        "--group_column", ctx.group_col,
+        "--scoring", ctx.scoring,
+    ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run, stream=True)
 
 
-def evaluate_holdout(ctx: Context) -> None:
+def evaluate_holdout(ctx: Context, skip_svm_importance: bool = False) -> None:
     if not ctx.feat_test:
         return  # nothing to do
     d = ctx.step_dir(7, "test_eval")
     script = STEPS_DIR / "05_evaluate_model.py"
-    run([
+    # ✅ Normalize LR penalty for consistent naming
+
+    cmd = [
         sys.executable, str(script),
         "--model", str(ctx.model_file),
         "--features", str(ctx.feat_test),
         "--no_cv",
         "--output_dir", str(d),
-        "--name", ctx.name + "_test",
+        "--name", f"{ctx.name}_test",
         "--label", ctx.label,
-        "--group_column", ctx.group_col
-    ], cwd=d, log=d / "eval_test.log", dry=ctx.dry_run)
+        "--group_column", ctx.group_col,
+        "--scoring", ctx.scoring
+    ]
+    if skip_svm_importance:
+        cmd.append("--skip-svm-importance")
+    run(cmd, cwd=d, log=d / "eval_test.log", dry=ctx.dry_run, stream=True)
 
 # ---------------------------------------------------------------------------
 # CLI setup
@@ -395,9 +442,11 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--features", type=click.Path(exists=True, path_type=Path), required=False)
 @click.option("--features2", type=click.Path(exists=True, path_type=Path))
 @click.option("--name", required=True)
-@click.option("--model", type=click.Choice(["XGBC", "RFC"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
+@click.option("--model", type=click.Choice(["XGBC", "RFC", "SVM","LR"]), required=False, help="Classifier used in the final training step (04_train_model.py)")
 @click.option("--muvr-model","muvr_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR feature-selection step ""(defaults to the value of --model)")
 @click.option("--upsampling", type=click.Choice(["none", "smote", "random"]), default="none")
+@click.option("--lr-penalty", type=click.Choice(["l1", "l2", "elasticnet"]), default="l2",help="Penalty type for Logistic Regression (default: l2)")
+@click.option("--xgb-policy", type=click.Choice(["depthwise", "lossguide"]), default="depthwise", help="Tree growth policy for XGBoost models (ignored for other models).")
 @click.option("--n-splits", "n_splits", default=5, show_default=True,  help="Number of folds used in the initial train/test split (Step 00)")
 @click.option("--n-splits-cv", "n_splits_cv", default=7, show_default=True, help="Number of CV folds used in training evaluation (Step 06)")
 @click.option("--output-dir", type=click.Path(path_type=Path))
@@ -415,6 +464,12 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
 @click.option("--chisq-file", type=click.Path(exists=True, path_type=Path))
+@click.option("--dropout-rate", "dropout_rate", type=click.FloatRange(0.0, 1.0), default=0.9, show_default=True, help="Proportion of features randomly dropped in MUVR feature selection (0–1).")
+@click.option("--n-jobs", "n_jobs", type=int, default=-1,
+              help="Number of parallel jobs for feature selection and model training (default: -1, all cores)")
+@click.option("--feature-selection-only", is_flag=True,
+              help="Run up to Step 03 (Chi²+MUVR/extract_features) and exit without training a model.")
+
 @click.pass_context
 
 def train(click_ctx: click.Context, *,
@@ -423,6 +478,7 @@ def train(click_ctx: click.Context, *,
           train_meta:   Path | None,
           test_meta:    Path | None,
           no_split:     bool,
+          feature_selection_only: bool,
           #split
           lineage_col: str,
           # features
@@ -439,6 +495,7 @@ def train(click_ctx: click.Context, *,
           name:         str,
           model:        str,
           muvr_model:   str,   # fallback
+          lr_penalty:   str,
           upsampling:   str,
           n_splits:     int,
           n_splits_cv:  int,
@@ -446,6 +503,9 @@ def train(click_ctx: click.Context, *,
           scoring:      str,
           label:        str,
           group_column: str,
+          dropout_rate: float,
+          xgb_policy: str,
+          n_jobs: int,
           output_dir:   Path | None) -> None:
     """Train model end-to-end, with optional Chi² + MUVR feature selection."""
 
@@ -490,6 +550,10 @@ def train(click_ctx: click.Context, *,
         k          = k,
         muvr_model=muvr_model or model, # fallback
         lineage_col = lineage_col,
+        n_jobs=n_jobs,
+        dropout_rate=dropout_rate,
+        lr_penalty=lr_penalty,
+        xgb_policy=xgb_policy,
     )
 
     # -------------------------------------------- ingest pre-existing artefacts
@@ -517,6 +581,8 @@ def train(click_ctx: click.Context, *,
             "--muvr needs the ORIGINAL k-mer matrix via --features "
             "(even if you hand in --features-train)."
         )
+    if not feature_selection_only and model is None:
+        raise click.UsageError("--model is required unless --feature-selection-only is used.")
 
     # ------------------------------------------------------------------ plan
     plan: List[tuple[bool, callable[[Context], None]]] = []
@@ -538,22 +604,26 @@ def train(click_ctx: click.Context, *,
     if muvr_flag:
         plan.append((True, muvr))
 
+    #ADD feautre extraction to the plan
+    plan.append((True, extract_features))
+
     # ---------------- downstream steps
-    plan.extend([
-        (True, extract_features),
-        (True, train_model),
-        (True, evaluate_train),
-        (ctx.feat_test is not None, evaluate_holdout),
-    ])
+    if not feature_selection_only:
+        plan.extend([
+            (True, train_model),
+            (True, evaluate_train),
+            (ctx.feat_test is not None, evaluate_holdout),
+        ])
 
     # ---------------------------------------------------------------- execute
     for cond, func in plan:
         if cond:
             func(ctx)
 
-    click.echo("\n✅ Training pipeline complete.")
-
-
+    if feature_selection_only:
+        click.echo("\n✅ Feature selection complete. Results are in 03_final_features/.")
+    else:
+        click.echo("\n✅ Training pipeline complete.")
 
 
 # -------------- Test command -----------------
@@ -570,18 +640,24 @@ def train(click_ctx: click.Context, *,
 @click.option("--test-metadata",  type=click.Path(exists=True, path_type=Path), help="Metadata TSV for the external test set (required with --extract-features)")
 @click.option("--muvr-file",  type=click.Path(exists=True, path_type=Path), help="*_muvr_*_min.tsv file with selected features(required with --extract-features)")
 @click.option("--predict-only", is_flag=True, help="Only output predictions without computing performance metrics.")
+@click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
+              help="Metric used to pick the best hyper-parameters in 04_train_model.py")
+@click.option("--skip-svm-importance", is_flag=True, help="Skip permutation importance for SVM models.")
 @click.pass_context
+
 def test(click_ctx: click.Context, *,
          model_file: Path,
          full_features:  Path | None,
          ready_features: Path | None,
          name: str,
+         scoring: str,
          label: str,
          group_column: str,
          output_dir: Path | None,
          muvr_file: Path | None,
          test_metadata : Path | None,
-         predict_only) -> None:
+         predict_only: bool,
+         skip_svm_importance: bool) -> None:
 
     #1. Sanity check
     if (full_features is None) == (ready_features is None):
@@ -597,11 +673,6 @@ def test(click_ctx: click.Context, *,
     if full_features and not predict_only and not test_metadata:
         raise click.UsageError("--features also needs --test-metadata unless using --predict-only")
 
-    # if full_features and not (muvr_file and test_metadata):
-    #     raise click.UsageError(
-    #         "--features also needs --muvr-file and --test-metadata."
-    #     )
-
     #2 - Basic context
     base = output_dir or Path(datetime.now().strftime("%y%m%d_%H%M"))
     base.mkdir(parents=True, exist_ok=True)
@@ -612,6 +683,7 @@ def test(click_ctx: click.Context, *,
                   muvr_model="None",
                   upsample="none",
                   n_splits=0,
+                  scoring=scoring,
                   dry_run=click_ctx.obj["dry"],
                   label=label,
                   group_col=group_column)
@@ -645,19 +717,6 @@ def test(click_ctx: click.Context, *,
 
         run(cmd, cwd=d, log=d / "extract_test.log", dry=ctx.dry_run)
         ctx.feat_test = (d / f"{name}_test.tsv").resolve()
-        # run([
-        #     sys.executable, str(script),
-        #     "--muvr_file", str(muvr_file.resolve()),
-        #     "--chisq_file", str(ctx.full_matrix),
-        #     "--test_metadata", str(test_metadata.resolve()),
-        #     "--output_dir", str(d),
-        #     "--label", label,
-        #     "--group_column", group_column,
-        #     "--name", name
-        # ], cwd=d, log=d / "extract_test.log",
-        #     dry=ctx.dry_run)
-
-        # ctx.feat_test = (d / f"{name}_test.tsv").resolve()
 
         # ── 4. branch B – ready table supplied ---------------------------------
     else:
@@ -665,20 +724,62 @@ def test(click_ctx: click.Context, *,
 
         # ── 5. evaluate --------------------------------------------------------
 
+    model_stem = ctx.model_file.stem
+    parts = model_stem.split("_")
+
+    # Defaults
+    ctx.model = "NA"
+    ctx.lr_penalty = "none"
+    ctx.upsample = "none"
+
+    # Parse from the right according to your scheme:
+    # ... <MODEL> <UPSAMPLE>                (non-LR)
+    # ... <MODEL> <LRPENALTY> <UPSAMPLE>    (LR)
+    if len(parts) >= 2:
+        last = parts[-1]           # always UPSAMPLE
+        second_last = parts[-2]    # MODEL (non-LR) OR LRPENALTY (LR)
+
+    # Check if it's LR by seeing if there's a penalty token
+        if last in {"l1", "l2", "elasticnet"} and len(parts) >= 3:
+            # LR case: [..., MODEL, LRPENALTY, UPSAMPLE]
+            ctx.model = parts[-3]
+            ctx.lr_penalty = last
+            ctx.upsample = second_last
+        else:
+            # Non-LR case: [..., MODEL, UPSAMPLE]
+            ctx.model = second_last
+            ctx.upsample = last
+            ctx.lr_penalty = "none"
+
+        # Now compose the evaluation name by fusing the user-provided --name
+    if ctx.model == "LR":
+        ctx.name = f"{name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}".replace("__", "_")
+    else:
+        ctx.name = f"{name}_{ctx.model}_{ctx.upsample}".replace("__", "_")
+
+    click.echo(
+        f"Composed evaluation name ➜ {ctx.name} "
+        f"(model={ctx.model}, lr_penalty={ctx.lr_penalty}, upsample={ctx.upsample})"
+    )
+
     if predict_only:
         d = ctx.step_dir(7, "test_eval")
         script = STEPS_DIR / "05_evaluate_model.py"
-        run([
+        cmd = [
             sys.executable, str(script),
             "--model", str(ctx.model_file),
             "--features", str(ctx.feat_test),
             "--no_cv",
             "--predict_only",
             "--output_dir", str(d),
+            "--scoring", ctx.scoring,
             "--name", ctx.name + "_test",
-        ], cwd=d, log=d / "predict.log", dry=ctx.dry_run)
+        ]
+        run(cmd, cwd=d, log=d / "predict.log", dry=ctx.dry_run)
+        if skip_svm_importance:
+            cmd.append("--skip-svm-importance")
     else:
-        evaluate_holdout(ctx)
+        evaluate_holdout(ctx, skip_svm_importance=skip_svm_importance)
 
     #evaluate_holdout(ctx)
     click.echo("\n✅ Test evaluation complete.")

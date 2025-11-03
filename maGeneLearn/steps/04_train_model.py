@@ -6,7 +6,7 @@ Usage:
     python train_model.py
         --features PATH           Path to TSV file containing features, label, and group column (index in first column)
         --label LABEL_COL         Name of the column to use as the target label
-        --model {RFC,XGBC}        Which model to train: RFC (RandomForestClassifier) or XGBC (XGBClassifier)
+        --model {RFC,XGBC, SVM}        Which model to train: RFC (RandomForestClassifier), XGBC (XGBClassifier) or SVM
         --sampling {none,random,smote}
                                   Oversampling strategy: none (no oversampling), random (RandomOverSampler), or smote (SMOTE)
         --group_column GROUP_COL  Column name in the TSV that contains group IDs for cross-validation
@@ -55,66 +55,27 @@ import numpy as np         # Numerical arrays
 import pandas as pd        # DataFrame operations
 from sklearn.utils.class_weight import compute_sample_weight  # For weighted training
 from scipy.sparse import issparse
+import time
+import logging
 
 # --- Machine Learning ---
-from sklearn.model_selection import StratifiedGroupKFold, RandomizedSearchCV
+from sklearn.base import clone
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 from imblearn.over_sampling import RandomOverSampler, SMOTE
+from sklearn.svm import SVC
 from imblearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
 
 # --- Model saving ---
 import joblib               # For model serialization
 from sklearn.preprocessing import LabelEncoder # For encoding string labels
+import optuna
+from sklearn.model_selection import cross_validate
 
 # Set a global random seed for reproducibility
 RSEED = 50
-
-# Configuration of supported models and their hyperparameter search spaces
-# === common lists -------------------------------------------------
-N_ESTIMATORS = [int(x) for x in np.linspace(200, 1000, 10)]
-MAX_DEPTH_RF  = [int(x) for x in np.linspace(100, 500, 11)]
-MAX_FEATS_RF  = ['log2', 'sqrt']
-
-# SMOTE neighbours
-SMOTE_K = [1, 2, 3, 4]
-
-# XGBoost space
-ETA          = np.linspace(0.01, 0.2, 10).tolist()
-GAMMA        = [0, 3, 5, 7, 9]
-MAX_DEPTH_XG = [3, 4, 5, 6, 7, 8, 9, 10]
-MIN_CHILD_W  = [1, 2, 3, 4, 5]
-SUBSAMPLE    = [0.6, 0.7, 0.8, 0.9, 1]
-COLSAMPLE    = [0.7, 0.8, 0.9, 1]
-
-MODEL_PARAMS = {
-    "RFC": {
-        "estimator": RandomForestClassifier(random_state=RSEED, n_jobs=-1),
-        "param_grid": {
-            "model__n_estimators": N_ESTIMATORS,
-            "model__max_depth":    MAX_DEPTH_RF,
-            "model__max_features": MAX_FEATS_RF,
-        },
-    },
-    "XGBC": {
-        "estimator": XGBClassifier(
-            random_state=RSEED,
-            n_jobs=1,                 # let joblib handle outer parallelism
-            use_label_encoder=False,
-            eval_metric="logloss",
-        ),
-        "param_grid": {
-            "model__n_estimators":     N_ESTIMATORS,
-            "model__learning_rate":    ETA,
-            "model__gamma":            GAMMA,
-            "model__max_depth":        MAX_DEPTH_XG,
-            "model__min_child_weight": MIN_CHILD_W,
-            "model__subsample":        SUBSAMPLE,
-            "model__colsample_bytree": COLSAMPLE,
-        },
-    },
-}
-
 
 def parse_arguments():
     """
@@ -129,8 +90,8 @@ def parse_arguments():
                         help='Path to TSV file containing features + label + group column')
     parser.add_argument('--label', required=True,
                         help='Which column to use as the target label')
-    parser.add_argument('--model', choices=list(MODEL_PARAMS), required=True,
-                        help='Which model to train: RFC or XGBC')
+    parser.add_argument('--model', choices=['RFC', 'XGBC', 'SVM', 'LR'], required=True,
+                        help='Which model to train: RFC, XGBC or SVM')
     parser.add_argument('--sampling', choices=['none','random','smote'], default='none',
                         help='Oversampling strategy: none, random, or smote')
     parser.add_argument('--group_column', required=True,
@@ -147,136 +108,210 @@ def parse_arguments():
                         help='One or more scoring metrics for evaluation and refit (default: balanced_accuracy)')
     parser.add_argument('--n_splits', type=int, default=5,
                         help='Number of CV folds (default: 5)')
+    parser.add_argument('--n-jobs', type=int, default=-1,
+                        help='Number of parallel jobs for CV and model training (default: -1 = all cores)')
+    parser.add_argument('--lr-penalty', choices=['l1', 'l2', 'elasticnet'], default='l2',
+                        help='Penalty type for Logistic Regression (default: l2)')
+    parser.add_argument('--xgb-policy', choices=['depthwise', 'lossguide'], default='depthwise',
+                        help='Tree growth policy for XGBoost (default: depthwise)')
     return parser.parse_args()
 
-
 def load_data(path, label_col, group_col):
-    """
-    Load feature DataFrame and extract target and grouping.
-    Args:
-        path (str): Path to TSV file (features + label).
-        label_col (str): Column name to use as label.
-    Returns:
-        X (pd.DataFrame): Feature matrix.
-        y (np.ndarray): Label vector.
-        groups (np.ndarray): Group IDs for CV.
-    """
     df = pd.read_csv(path, sep='\t', index_col=0)
     if label_col not in df.columns:
         sys.exit(f"Error: label column '{label_col}' not found in input.")
-    y = df[label_col].values
-    # Determine grouping column for cross-validation
     if group_col not in df.columns:
-        sys.exit(f"Error: Group column '{group_col}' not found in input.")
+        sys.exit(f"Error: group column '{group_col}' not found in input.")
+    y = df[label_col].values
     groups = df[group_col].values
-    X = df.drop(columns=[label_col,group_col])
-
+    X = df.drop(columns=[label_col, group_col])
     return X, y, groups
 
 
-def prepare_pipeline(model_key, sampling):
-    """
-    Construct an imblearn Pipeline with optional oversampling and the chosen estimator.
-    Args:
-        model_key (str): Key in MODEL_PARAMS ('RFC' or 'XGBC').
-        sampling (str): 'none', 'random', or 'smote'.
-    Returns:
-        pipeline (Pipeline): Configured pipeline object.
-        param_grid (dict): Hyperparameter grid for RandomizedSearchCV.
-    """
-    cfg = MODEL_PARAMS[model_key]
-    steps, grid = [], cfg["param_grid"].copy()
-
+def prepare_pipeline(model_key, sampling, n_jobs, lr_penalty="l2",xgb_policy="depthwise"):
+    steps = []
     if sampling == "random":
         steps.append(("oversampler", RandomOverSampler(random_state=RSEED)))
     elif sampling == "smote":
-        steps.append(("oversampler", SMOTE(random_state=RSEED)))
-        # expose SMOTE hyper-parameter
-        grid["oversampler__k_neighbors"] = SMOTE_K
+        steps.append(("oversampler", SMOTE(random_state=RSEED)))  # k_neighbors tuned in Optuna
 
-    steps.append(("model", cfg["estimator"]))
-    return Pipeline(steps), grid
+    if model_key == "RFC":
+        estimator = RandomForestClassifier(random_state=RSEED, n_jobs=n_jobs)
+    elif model_key == "XGBC":
+        if xgb_policy == "lossguide":
+            estimator = XGBClassifier(
+                random_state=RSEED,
+                n_jobs=n_jobs,
+                tree_method="hist",
+                grow_policy="lossguide",
+                max_depth=0,  # required when using max_leaves
+                use_label_encoder=False,
+                eval_metric="logloss",
+            )
+        else:
+            estimator = XGBClassifier(
+                random_state=RSEED,
+                n_jobs=n_jobs,  # let joblib handle outer CV parallelism
+                use_label_encoder=False,
+                eval_metric="logloss",
+            )
+
+    elif model_key == "SVM":
+        estimator = SVC(random_state=RSEED, probability=True)  # probability=True for ROC/AUC support
 
 
-def get_cv_splits(X, y, groups,n_splits):
-    """
-    Create cross-validation splits based on grouping strategy.
-    Creates StratifiedGroupKFold
-    Returns:
-        list: List of (train_idx, test_idx) splits.
-    """
+    elif model_key == "LR":
+        estimator = LogisticRegression(
+            max_iter=5000,
+            solver="saga",
+            multi_class="multinomial",
+            penalty=lr_penalty,
+            random_state=RSEED,
+            n_jobs=n_jobs
+        )
+
+    steps.append(("model", estimator))
+
+    return Pipeline(steps)
+
+
+def get_cv_splits(X, y, groups, n_splits):
     cv = StratifiedGroupKFold(
         n_splits=n_splits, shuffle=True, random_state=RSEED
     )
     return list(cv.split(X, y, groups))
 
 
+def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling,n_jobs):
+    model = clone(pipeline)
+    if model_key == "XGBC":
+        if hasattr(model.named_steps["model"], "grow_policy") and model.named_steps["model"].grow_policy == "lossguide":
+            params = {
+                "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 2000, step=200),
+                "model__learning_rate": trial.suggest_float("model__learning_rate", 0.005, 0.2, log=True),
+                "model__max_leaves": trial.suggest_int("model__max_leaves", 16, 64, step=8),
+                "model__min_child_weight": trial.suggest_int("model__min_child_weight", 1, 50),
+                "model__gamma": trial.suggest_float("model__gamma", 0, 5),
+                "model__subsample": trial.suggest_float("model__subsample", 0.5, 1.0),
+                "model__colsample_bytree": trial.suggest_float("model__colsample_bytree", 0.5, 1.0),
+                "model__reg_alpha": trial.suggest_float("model__reg_alpha", 1e-8, 10.0, log=True),
+                "model__reg_lambda": trial.suggest_float("model__reg_lambda", 1e-8, 10.0, log=True),
+            }
+        else:
+            params = {
+                "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 2000, step=200),
+                "model__learning_rate": trial.suggest_float("model__learning_rate", 0.005, 0.2, log=True),
+                "model__max_depth": trial.suggest_int("model__max_depth", 3, 7),
+                "model__min_child_weight": trial.suggest_int("model__min_child_weight", 1, 50),
+                "model__gamma": trial.suggest_float("model__gamma", 0, 5),
+                "model__subsample": trial.suggest_float("model__subsample", 0.5, 1.0),
+                "model__colsample_bytree": trial.suggest_float("model__colsample_bytree", 0.5, 1.0),
+                "model__reg_alpha": trial.suggest_float("model__reg_alpha", 1e-8, 10.0, log=True),
+                "model__reg_lambda": trial.suggest_float("model__reg_lambda", 1e-8, 10.0, log=True),
+            }
+    elif model_key == "RFC":  # RFC
+        params = {
+            "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 1500, step=100),
+            "model__max_depth": trial.suggest_int("model__max_depth", 10, 100, step=10),
+            "model__max_features": trial.suggest_categorical("model__max_features", ["log2", "sqrt", 0.2, 0.5]),
+        }
+        if sampling == "none":
+            params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
+
+    elif model_key == "SVM":
+        params = {
+            "model__C": trial.suggest_loguniform("model__C", 1e-3, 1e3),
+            "model__kernel": trial.suggest_categorical("model__kernel", ["linear", "rbf"]),
+            "model__gamma": trial.suggest_categorical("model__gamma", ["scale", "auto"]),
+        }
+        if sampling == "none":
+            params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
+
+    elif model_key == "LR":
+        params = {
+            "model__C": trial.suggest_float("model__C", 1e-3, 1e3, log=True),
+        }
+        if model.named_steps["model"].penalty == "elasticnet":
+            params["model__l1_ratio"] = trial.suggest_float("model__l1_ratio", 0.0, 1.0)
+        if sampling == "none":
+            params["model__class_weight"] = trial.suggest_categorical(
+                "model__class_weight", [None, "balanced"]
+            )
+
+    if sampling == "smote":
+        params["oversampler__k_neighbors"] = trial.suggest_int("oversampler__k_neighbors", 3, 10)
 
 
-def search_hyperparameters(pipeline, param_grid, cv_splits, X, y,
-                           model_key, sampling, n_iter, scoring):
-    """
-    Perform RandomizedSearchCV over the pipeline and parameter grid.
-    Args:
-        pipeline (Pipeline): Pipeline to optimize.
-        param_grid (dict): Hyperparameter grid.
-        cv_splits (list): Precomputed CV splits.
-        n_iter (int): Number of parameter settings to sample.
-        scoring (list): Scoring metrics for evaluation and refit.
-    Returns:
-        RandomizedSearchCV: Fitted search object.
-    """
-    search = RandomizedSearchCV(
-        pipeline,
-        param_distributions=param_grid,
-        n_iter=n_iter,
-        scoring=scoring,
-        refit=scoring[0],  # refit on first scoring metric by default
-        cv=cv_splits,
-        random_state=RSEED,
-        verbose=2,
-        n_jobs=-1
-    )
-    # If XGBC without oversampling, supply sample weights
+
+    model.set_params(**params)
+
+    start = time.time()
+
     if model_key == 'XGBC' and sampling == 'none':
-        sw = compute_sample_weight('balanced', y)
-        search.fit(X, y, model__sample_weight=sw)
+        sw = compute_sample_weight("balanced", y)
+        cv_results = cross_validate(
+            model, X, y, groups=groups, cv=cv_splits,
+            scoring=scoring, fit_params={"model__sample_weight": sw}, n_jobs=n_jobs
+        )
     else:
-        search.fit(X, y)
-    return search
+        cv_results = cross_validate(
+            model, X, y, groups=groups, cv=cv_splits,
+            scoring=scoring, n_jobs=n_jobs
+        )
+
+    elapsed = time.time() - start
+
+    metric = scoring[0]
+    mean_score = np.mean(cv_results[f"test_{metric}"])
+    std_score = np.std(cv_results[f"test_{metric}"])
+    scores = cv_results[f"test_{metric}"]
+
+    logging.info(
+        f"[Trial {trial.number}] {model_key} | "
+        f"Mean {metric}: {mean_score:.4f} "
+        f"(±{std_score:.4f}) | "
+        f"Time: {elapsed:.1f}s"
+    )
 
 
-def save_model_and_cv(search, model_dir, cv_dir, name, model, sampling):
-    """
-    Save the trained model and cross-validation results to disk.
-    Args:
-        search (RandomizedSearchCV): Fitted search object.
-        model_path (str): File path to save best model (.joblib).
-        cv_path (str): File path to save CV results (.tsv).
-    """
-    # Create parent directories only if a directory component exists
-    Path(model_dir).expanduser().resolve().mkdir(parents=True, exist_ok=True)
-    Path(cv_dir).expanduser().resolve().mkdir(parents=True, exist_ok=True)
+    trial_data = {
+        "trial": trial.number,
+        "score_mean": np.mean(scores),
+        "score_std": np.std(scores),
+        **{f"fold{i}_score": s for i, s in enumerate(scores)},
+        **params,
+        "elapsed_time": elapsed
+    }
 
-    model_path = os.path.join(model_dir, f"{name}_{model}_{sampling}.joblib")
-    cv_path    = os.path.join(cv_dir, f"CV_{name}_{model}_{sampling}.tsv")
+    return np.mean(scores), trial_data
 
-    joblib.dump(search.best_estimator_, model_path)
-    cv_df = pd.DataFrame(search.cv_results_)
-    cv_df.to_csv(cv_path, sep='\t', index=False)
+
+
+def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
+                                  model_key, sampling, n_iter, scoring,n_jobs):
+    trial_history = []
+
+    def _objective(trial):
+        score, trial_data = optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_key, sampling,n_jobs=1)
+        trial_history.append(trial_data)
+        
+        return score
+
+    study = optuna.create_study(direction="maximize",
+                                sampler=optuna.samplers.TPESampler(seed=RSEED))
+    study.optimize(_objective, n_trials=n_iter, n_jobs=n_jobs)
+
+    best_params = study.best_params
+    best_score = study.best_value
+
+    final_model = clone(pipeline)
+    final_model.set_params(**best_params)
+    final_model.fit(X, y)
+
+    return final_model, pd.DataFrame(trial_history), best_params, best_score
 
 
 def main():
-    """
-    Main execution flow:
-      - Parse arguments
-      - Load data
-      - Build pipeline
-      - Define CV
-      - Run hyperparameter search
-      - Save model and CV results
-      - Optionally evaluate and save report
-    """
     args = parse_arguments()
     X, y, groups = load_data(args.features, args.label, args.group_column)
     if args.model == 'XGBC':
@@ -284,20 +319,39 @@ def main():
         y = le.fit_transform(y)
 
     if args.sampling == 'smote' and issparse(X):
-        sys.exit("Error: SMOTE cannot be applied to a sparse matrix. "
-                 "Choose --sampling random or none, or densify the data first.")
-    pipeline, param_grid = prepare_pipeline(args.model, args.sampling)
+        sys.exit("Error: SMOTE cannot be applied to a sparse matrix. Densify first.")
+
+    pipeline = prepare_pipeline(args.model, args.sampling, args.n_jobs,lr_penalty=args.lr_penalty, xgb_policy=args.xgb_policy)
     cv_splits = get_cv_splits(X, y, groups, args.n_splits)
 
-    print("Starting hyperparameter search...")
-    search = search_hyperparameters(
-        pipeline, param_grid, cv_splits,
-        X, y, args.model, args.sampling,args.n_iter, args.scoring)
+    print("Starting Optuna hyperparameter optimization...")
+    best_model, trials_df, best_params, best_score = search_hyperparameters_optuna(
+        pipeline, X, y, groups, cv_splits,
+        args.model, args.sampling, args.n_iter, args.scoring, args.n_jobs
+    )
 
-    save_model_and_cv(search, args.output_model, args.output_cv, args.name, args.model, args.sampling)
-    print(f"Training and CV complete. Model saved in '{args.output_model}' and CV results in '{args.output_cv}'.")
+    Path(args.output_model).mkdir(parents=True, exist_ok=True)
+    Path(args.output_cv).mkdir(parents=True, exist_ok=True)
 
-    print("Training and CV complete. Model and results saved.")
+    if args.model == "LR":
+        model_path = os.path.join(args.output_model,
+                                  f"{args.name}_{args.model}_{args.sampling}_{args.lr_penalty}.joblib")
+        cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.sampling}_{args.lr_penalty}.tsv")
+
+    else:
+        model_path = os.path.join(args.output_model, f"{args.name}_{args.model}_{args.sampling}.joblib")
+        cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.sampling}.tsv")
+
+    if args.model == "XGBC":
+        joblib.dump({"model": best_model, "label_encoder": le}, model_path)
+    else:
+        joblib.dump(best_model, model_path)
+
+    trials_df.to_csv(cv_path, sep="\t", index=False)
+
+    print(f"Best params: {best_params}")
+    print(f"Best score ({args.scoring[0]}): {best_score:.4f}")
+    print(f"Model saved in '{model_path}' and CV results in '{cv_path}'.")
 
 
 if __name__ == '__main__':

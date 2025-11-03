@@ -27,7 +27,10 @@ setup(
             "joblib==1.2.0",
             "shap==0.42.1",
             "matplotlib==3.7.2",
-	    "py-muvr==1.0.1"
+	    "py-muvr==1.0.1",
+	    "optuna==4.5.0",
+	    "tqdm==4.67.1",
+	    "psutil==7.1.0"
         ],
     entry_points={
         "console_scripts": [

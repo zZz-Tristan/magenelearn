@@ -15,7 +15,7 @@ Inputs:
   --fasta          If set, it produces a fasta-formatted output of the features used to train the model. Features are named according to importance based on the feature_importance() function from scikit-learn.
                    Works if features are DNA sequences, and if sequences match column names.
   --predict_only   If set, it predicts new samples that don't contain labels. So, no evaluation metrics are calculated.
-
+  --skip-shap      If set, skip SHAP value computation (faster for large datasets).
 Outputs:
   <name>_predictions_probabilities.tsv            Tab-separated file with  class probability columns indexed by sample ID, and also with 'truth' and 'prediction' columns for each sample.
   <name>_classification_report.tsv  Tab-separated file summarizing precision, recall, f1-score for each class.
@@ -60,16 +60,21 @@ import numpy as np                   # numerical ops
 import pandas as pd                  # TSV I/O
 import shap                          # SHAP explanations
 from sklearn.base import clone       # deep‑copy estimator
+from sklearn.inspection import permutation_importance
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     accuracy_score,
     balanced_accuracy_score,
     classification_report,
     confusion_matrix,
+    matthews_corrcoef,
+    average_precision_score
 )
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.utils import compute_sample_weight
 from sklearn.preprocessing import LabelEncoder
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import label_binarize
 
 import xgboost as xgb
 
@@ -135,6 +140,10 @@ def predict_with_pipeline(pipeline, X):
     # ---------- Generic sklearn branch -----------------------------------
     preds = pipeline.predict(X)
 
+    if hasattr(model, "feature_names_in_"):
+        # Align dataframe to training column order
+        X = X.reindex(columns=model.feature_names_in_, fill_value=0)
+
     if hasattr(pipeline, "predict_proba"):
         probas = pipeline.predict_proba(X)          # full matrix
     else:
@@ -155,7 +164,9 @@ def run_evaluation(
     output_dir: Path,
     name: str,
     fasta: bool,
-    predict_only: bool = False
+    scoring: str,
+    predict_only: bool = False,
+    skip_svm_importance: bool = False,
 ) -> None:
     """Grouped‑CV evaluation: predictions, metrics, feature importances, SHAP."""
 
@@ -167,6 +178,62 @@ def run_evaluation(
     logging.info("Loading model ➜ %s", model_path)
     pipeline = joblib.load(model_path)  # imblearn.Pipeline or estimator
 
+    # ---------------------------------------------------------------
+    # Handle case where model was saved as {"model": pipeline, "label_encoder": le}
+    # ---------------------------------------------------------------
+    if isinstance(pipeline, dict) and "label_encoder" in pipeline:
+        le_model = pipeline["label_encoder"]
+        pipeline = pipeline["model"]
+
+        if le_model is not None:
+            model_classes = [str(c) for c in le_model.classes_]
+            logging.info("Loaded LabelEncoder with classes: %s", model_classes)
+
+            # Apply to inner model or top level
+            if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
+                pipeline.named_steps["model"].__dict__["classes_"] = np.array(model_classes)
+            elif hasattr(pipeline, "classes_"):
+                pipeline.__dict__["classes_"] = np.array(model_classes)
+
+            logging.info("Model classes normalized to string labels.")
+
+    # ---------------------------------------------------------------
+    # Handle legacy models (no encoder, numeric classes)
+    # ---------------------------------------------------------------
+    else:
+        model_step = (
+            pipeline.named_steps["model"]
+            if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps
+            else pipeline
+        )
+        if hasattr(model_step, "classes_") and np.issubdtype(type(model_step.classes_[0]), np.number):
+            logging.warning("Old model detected – converting numeric classes to strings.")
+            model_step.__dict__["classes_"] = np.array([str(c) for c in model_step.classes_])
+
+    # ---------------------------------------------------------------
+    # Build consistent LabelEncoder from the model’s classes
+    # ---------------------------------------------------------------
+    # Only rebuild the encoder if we *didn't* load one from the artifact
+    if "le_model" in locals() and le_model is not None:
+        le = le_model
+        class_names = list(le.classes_)
+        logging.info("Using loaded LabelEncoder (classes: %s)", class_names)
+    else:
+        model_step = (
+            pipeline.named_steps["model"]
+            if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps
+            else pipeline
+        )
+        le = LabelEncoder()
+        if hasattr(model_step, "classes_"):
+            le.classes_ = np.array(model_step.classes_)
+            class_names = list(model_step.classes_)
+            logging.info("LabelEncoder rebuilt from model classes: %s", class_names)
+        else:
+            le = None
+            class_names = []
+
+    #Load feature matrix
     logging.info("Reading feature matrix ➜ %s", features_tsv)
     df = pd.read_csv(features_tsv, sep="\t", index_col=0)
 
@@ -184,15 +251,30 @@ def run_evaluation(
         logging.info("Predictions written to ➜ %s", output_file)
         return
 
-
     if label_col not in df.columns or group_col not in df.columns:
         raise KeyError("label or group column missing in TSV header")
 
-    # Encode string labels to integers
-    le = LabelEncoder()
+    # 3️⃣  Encode labels --------------------------------------------------------
     y_raw = df[label_col].values
-    y = le.fit_transform(y_raw)
-    class_names = list(le.classes_)
+    if le is not None and hasattr(le, "classes_"):
+        # --- Diagnostic logging: check what the encoder sees ---
+        logging.info("Encoder classes: %s", list(le.classes_))
+        logging.info("Unique labels in test data: %s", np.unique(y_raw))
+
+        unmatched = [lbl for lbl in np.unique(y_raw) if str(lbl) not in [str(c) for c in le.classes_]]
+        if unmatched:
+            logging.warning("Labels in test data not found in model classes: %s", unmatched)
+
+        # --- Make sure everything is compared as strings ---
+        le.classes_ = np.array([str(c) for c in le.classes_])
+        class_to_idx = {cls: i for i, cls in enumerate(le.classes_)}
+
+        y = np.array([class_to_idx.get(str(label), -1) for label in y_raw])
+    else:
+        le = LabelEncoder().fit(y_raw)
+        y = le.transform(y_raw)
+        class_names = list(le.classes_)
+        logging.info("LabelEncoder fitted directly on input labels: %s", class_names)
 
     X = df.drop(columns=[label_col, group_col])
     groups = df[group_col].values
@@ -219,11 +301,8 @@ def run_evaluation(
             # Raw classifier instance
             model_step = pipeline
 
-        if hasattr(model_step, 'feature_importances_'):
-            feature_imps.append(
-                pd.Series(model_step.feature_importances_, index=X.columns)
-            )
-        shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X))
+        # Skip feature importance and SHAP in test-set evaluation
+        logging.info("Skipping feature importance and SHAP in test evaluation mode.")
     else:
         if n_splits is None:
             raise ValueError("n_splits required when CV enabled")
@@ -268,8 +347,69 @@ def run_evaluation(
             if hasattr(model_step, "feature_importances_"):
                 feature_imps.append(pd.Series(model_step.feature_importances_, index=X.columns))
 
-            # SHAP values
-            shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
+            elif isinstance(model_step, LogisticRegression):
+                logging.info("Extracting coefficients as feature importance for Logistic Regression.")
+                coefs = np.mean(np.abs(model_step.coef_), axis=0)
+                fi = pd.Series(coefs, index=X.columns)
+                feature_imps.append(fi)
+
+            elif model_step.__class__.__name__ == "SVC":
+                if skip_svm_importance:
+                    logging.info("Skipping permutation importance for SVM because --skip-svm-importance was set.")
+                else:
+                    logging.info("Computing permutation importance for SVM (subset of features).")
+                    if hasattr(model_step, "feature_names_in_"):
+                        X_te_aligned = X_te.reindex(columns=model_step.feature_names_in_, fill_value=0)
+                    else:
+                        X_te_aligned = X_te
+                    # Reduce to top-N features by univariate variance (or just first N cols)
+                    N_TOP = min(500, X_te.shape[1])  # cap at 500 features
+                    top_features = X_te.iloc[:, :N_TOP]  # simple subset; could replace with chi² selection
+                    result = permutation_importance(
+                        clf, top_features, y_te,
+                        n_repeats=10,
+                        random_state=RSEED,
+                        n_jobs=-1,
+                        scoring=scoring
+                    )
+                    fi = pd.Series(result.importances_mean, index=top_features.columns)
+                    feature_imps.append(fi)
+            else:
+                logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
+
+            if hasattr(model_step, "feature_names_in_"):
+                X_te = X_te.reindex(columns=model_step.feature_names_in_, fill_value=0)
+
+            # SHAP values only for tree-based models
+            if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
+                # --- Diagnostic: check model vs. data alignment ---
+                logging.info(
+                    "DEBUG SHAP | model: %s | X_te shape: %s | n_features_in_: %s",
+                    type(model_step).__name__,
+                    X_te.shape,
+                    getattr(model_step, "n_features_in_", "NA")
+                )
+
+                if hasattr(model_step, "feature_names_in_"):
+                    model_feats = list(model_step.feature_names_in_)
+                    diff1 = set(model_feats) - set(X_te.columns)
+                    diff2 = set(X_te.columns) - set(model_feats)
+                    logging.info(
+                        "DEBUG SHAP | missing_in_X_te=%d | extra_in_X_te=%d",
+                        len(diff1),
+                        len(diff2)
+                    )
+                    if diff1:
+                        logging.warning("Features missing in X_te: %s", list(diff1)[:10])
+                    if diff2:
+                        logging.warning("Extra features in X_te: %s", list(diff2)[:10])
+                # --- End of diagnostic block ---
+                shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
+            elif isinstance(model_step, LogisticRegression):
+                logging.info("Skipping SHAP: Logistic Regression not supported (use coefficients instead).")
+            else:
+                logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
+
 
     # 4️⃣  Aggregate OOF results -----------------------------------------------
     y_true = np.concatenate(oof_true)
@@ -290,9 +430,57 @@ def run_evaluation(
     bacc = balanced_accuracy_score(y_true_str, y_pred_str)
     logging.info("OOF Accuracy %.4f | Balanced Accuracy %.4f", acc, bacc)
 
-    report_df = pd.DataFrame(classification_report(y_true_str, y_pred_str, output_dict=True)).T.reset_index()
+    report_dict = classification_report(y_true_str, y_pred_str, output_dict=True, zero_division=0)
+    report_df= pd.DataFrame(report_dict).T.reset_index()
+
+    # Adjust macro avg to include only classes with support > 0
+    # ────────────────────────────────────────────────
+    # Identify only those rows that correspond to actual classes
+    mask_classes = report_df["index"].isin(np.unique(y_true_str))
+    nonzero_classes = report_df[mask_classes & (report_df["support"] > 0)]
+
+    if not nonzero_classes.empty:
+        macro_prec = nonzero_classes["precision"].mean()
+        macro_rec = nonzero_classes["recall"].mean()
+        macro_f1 = nonzero_classes["f1-score"].mean()
+
+        report_df.loc[report_df["index"] == "macro avg", ["precision", "recall", "f1-score"]] = [macro_prec, macro_rec, macro_f1]
+
+    # Optional cleanup: remove zero-support classes for cleaner reporting
+    report_df = report_df[~((report_df["support"] == 0) & (report_df["index"].isin(le.classes_)))]
+
     cm_arr = confusion_matrix(y_true_str, y_pred_str, labels=class_names)
     cm_df = pd.DataFrame(cm_arr, index=class_names, columns=class_names)
+
+    # ───────────────────────────── MCC and AUPRC ─────────────────────────────
+    logging.info("Computing additional metrics: MCC and AUPRC (per-class, macro, micro)")
+
+    mcc = matthews_corrcoef(y_true_str, y_pred_str)
+    y_true_bin = label_binarize(y_true_str, classes=class_names)
+    y_score = proba_df[class_names].values
+    # --- Per-class AUPRC ---
+    auprc_per_class = {
+        cls: average_precision_score(y_true_bin[:, i], y_score[:, i])
+        for i, cls in enumerate(class_names)
+    }
+
+    # --- Macro and micro AUPRC ---
+    auprc_macro = np.mean(list(auprc_per_class.values()))
+    auprc_micro = average_precision_score(y_true_bin.ravel(), y_score.ravel())
+
+    # --- Assemble results ---
+    auprc_mcc = {
+        "MCC": round(mcc, 4),
+        "Macro_AUPRC": round(auprc_macro, 4),
+        "Micro_AUPRC": round(auprc_micro, 4),
+        **{f"AUPRC_{cls}": round(v, 4) for cls, v in auprc_per_class.items()},
+    }
+
+    auprc_mcc_df = pd.DataFrame([auprc_mcc])
+    auprc_mcc_path = output_dir / f"{name}_mcc_auprc.tsv"
+    auprc_mcc_df.to_csv(auprc_mcc_path, sep="\t", index=False)
+    logging.info("Extra metrics written to ➜ %s", auprc_mcc_path)
+
 
     if feature_imps:
         fi_df = pd.concat(feature_imps, axis=1)
@@ -400,6 +588,8 @@ def parse_args():
     p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     p.add_argument("--fasta", action="store_true", help = "If set, write a FASTA file of features sorted by importance")
     p.add_argument("--predict_only", action="store_true",help="Only output predictions without evaluating performance.")
+    p.add_argument("--scoring",  type=str,help="Scoring parameter for best model")
+    p.add_argument("--skip-svm-importance", action="store_true", help="Skip permutation importance calculation for SVM models.")
     return p.parse_args()
 
 
@@ -421,7 +611,9 @@ def main():
             output_dir=args.output_dir,
             name=args.name,
             fasta=args.fasta,
-            predict_only=args.predict_only
+            predict_only=args.predict_only,
+            scoring=args.scoring,
+            skip_svm_importance=args.skip_svm_importance,
         )
     except Exception:
         logging.exception("Evaluation failed")
