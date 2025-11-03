@@ -5,12 +5,41 @@ MaGeneLearn is a modular CLI that chains together a set of numbered Python
 scripts (`00_split_dataset.py → 05_evaluate_model.py`) to train and evaluate
 machine-learning models from presence/absence tables.
 
-The wrapper exposes **two** high-level commands:
+Why MaGeneLearn?
 
-| Command | What it does |
-|---------|--------------|
-| `magene-learn train` | end-to-end model building (split → *optional* feature-selection → fit → CV → eval) |
-| `magene-learn test`  | evaluate an already–trained model on an external set ( **no CV** ) |
+* **1) Phylogeny-aware train/test split**
+
+Provide two levels of phylogenetic clustering in your metadata:
+
+*Outbreak-like clustering (fine scale)*: groups of near-identical isolates that must not be split across train/test (prevents data leakage). Examples: EnteroBase HC5, or your own SNP/cgMLST cluster IDs.
+
+*Higher-level clustering (coarser scale)*: used for stratification so both train and test retain similar composition across lineages. Examples: ST, LINEAGE, EnteroBase HC50.
+MaGeneLearn keeps each outbreak-like cluster entirely in one split and stratifies by the higher-level clusters.
+
+* **2) Outcome-stratified split** 
+
+In addition to phylogeny, the split is stratified by the outcome/label, preserving class proportions in both train and test.
+
+* **3)Efficient hyperparameter optimization (Optuna)**
+Uses Optuna’s state-of-the-art samplers and pruning to find strong settings quickly for each supported model.
+
+* **4)Feature importance for interpretability**
+
+After training, MaGeneLearn reports feature importance via SHAP (XGBoost, Random Forest) or permutation importance (SVM), helping you “open the black box” and link predictive signals to biology.
+
+* **5) Flexible inputs**
+Any binary presence/absence features are supported: unitigs, k-mers, one-hot cgMLST profiles, accessory genes—or combinations thereof.
+
+* **6)Built-in feature reduction**
+Large initial feature spaces often contain noise. MaGeneLearn can reduce to the most informative set using Chi-square and/or MUVR, improving signal-to-noise before model fitting.
+
+Metadata requirements (for splitting):
+
+A column with outcome/label.
+
+A fine-scale cluster column (outbreak-like; e.g., HC5/SNP/cgMLST cluster).
+
+A coarse-scale cluster column for stratification (e.g., ST/LINEAGE/HC50).
 
 
 
@@ -34,12 +63,22 @@ maGeneLearn train --meta-file test/full_train/2023_jp_meta_file.tsv --features t
 
 ## 3 Command-line reference
 
+The wrapper exposes **two** high-level commands:
+
+| Command | What it does |
+|---------|--------------|
+| `magene-learn train` | end-to-end model building (split → *optional* feature-selection → fit → CV → eval) |
+| `magene-learn test`  | evaluate an already–trained model on an external set ( **no CV** ) |
+
+
 ```bash
 maGeneLearn train [OPTIONS]               # model building pipeline
 maGeneLearn test  [OPTIONS]               # evaluate existing model
 maGeneLearn --help                        # top-level help
 maGeneLearn <subcmd> --help               # help for a sub-command
 ```
+
+
 
 ## 4 · Inputs for training a new model
 
@@ -148,11 +187,11 @@ This command will create the following output:
 ```
 
 * **B) Train multiple models on the same selected features**
-For each algorithm you want to compare (RFC, XGBC, SVM, LR), launch train runs that reuse the already-materialized feature tables by passing:
+For each algorithm you want to compare (RFC, XGBC, SVM, LR), launch train runs that reuse the already-materialized feature tables. This avoids recomputing Chi²/MUVR and ensures a fair comparison across models (same feature set). Required labels will include:
 
---features-train (and --features-test if you want a held-out split), the same --group-column, --label, --lineage-col, different --model (and --lr-penalty / --xgb-policy as needed).
+--features-train, the same --group-column, --label, different --model (and --lr-penalty / --xgb-policy as needed).
 
-This avoids recomputing Chi²/MUVR and ensures a fair comparison across models (same feature set).
+
 
 **RFC (random upsampling)**
 ```bash
@@ -361,8 +400,29 @@ In this scenario, you start with not-so-many features (Around 600K~1M). Therefor
   --output-dir skip_chi_test
 ```
 
+## 9 · Cite
 
-## 8 · Contact
+* If you use maGeneLearn, please cite:
+
+"Predicting clinical outcome of Escherichia coli O157:H7 infections using explainable Machine Learning"
+https://doi.org/10.1101/2025.06.05.25329036 
+
+"Optuna: A Next-generation Hyperparameter Optimization Framework"	
+https://doi.org/10.48550/arXiv.1907.10902
+
+See the following link to cite scikit-learn [https://scikit-learn.org/stable/about.html#citing-scikit-learn]
+
+* If you use MUVR for feature selection:
+
+"Variable selection and validation in multivariate modelling"
+https://doi.org/10.1093/bioinformatics/bty710
+
+* If you use feature interpretations with SHAP
+
+"A Unified Approach to Interpreting Model Predictions"
+https://doi.org/10.48550/arXiv.1705.07874
+
+## 10 · Contact
 
 Do you have any doubts? Please contact me at: j.a.paganini@uu.nl.
 
