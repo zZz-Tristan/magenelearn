@@ -150,7 +150,7 @@ maGeneLearn test --help
 * **A) Split your data into training and test and run feature selection once**
 Use --chisq and/or --muvr with --feature-selection-only to stop after selecting the most predictive features. 
 
-### Runs split → Chi² → MUVR → FINAL FEATURES, then exits
+#### Runs split → Chi² → MUVR → FINAL FEATURES, then exits
 ```bash
 maGeneLearn train \
   --feature-selection-only \
@@ -368,7 +368,7 @@ In this scenario, you have already split your data. Now you would like to select
 Use --chisq and/or --muvr with --feature-selection-only to stop after selecting the most predictive features. 
 
 
-### Runs Chi² → MUVR → FINAL FEATURES, then exits
+#### Runs Chi² → MUVR → FINAL FEATURES, then exits
 ```bash
 maGeneLearn train \
   --no-split \
@@ -390,7 +390,7 @@ maGeneLearn train \
 * **8.2) Skip Chi² (use an already-filtered matrix, still run MUVR)**  
 In this scenario, you start with not-so-many features (Around 600K~1M). Therefore, you would like to skip Chi² step and use MUVR as the sole feature selection method. In this case, you will have to pass the same feature file into two different flags: `--features` and `--chisq-file`.
 
-### Runs split → MUVR → FINAL FEATURES, then exits
+#### Runs split → MUVR → FINAL FEATURES, then exits
 
 ```bash
   maGeneLearn train \
