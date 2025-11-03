@@ -5,15 +5,31 @@ MaGeneLearn is a modular CLI that chains together a set of numbered Python
 scripts (`00_split_dataset.py → 05_evaluate_model.py`) to train and evaluate
 machine-learning models from presence/absence tables.
 
-Why MaGeneLearn?
+## Table of contents
+- [Why MaGeneLearn?](#why-magenelearn)
+- [1 Installation](#1-installation)
+- [2 Test the installation](#2-test-the-installation)
+- [3 Command-line reference](#3-command-line-reference)
+- [4 · Inputs for training a new model](#4--inputs-for-training-a-new-model)
+- [5 · Most common flags for training](#5--most-common-flags-for-training)
+- [6 · Recommended usage of train to save time, memory and headaches](#6--recommended-usage-of-train-to-save-time-memory-and-headaches)
+- [7 · Evaluate or predict using test mode](#7--evaluate-or-predict-using-test-mode)
+- [8 · Different flavours](#8--different-flavours)
+  - [8.1) Select features without splitting](#81-select-features-without-splitting)
+  - [8.2) Skip Chi² (use an already-filtered matrix, still run MUVR)](#82-skip-chi-use-an-already-filtered-matrix-still-run-muvr)
+- [9 · Cite](#9--cite)
+- [10 · Contact](#10--contact)
+
+
+## Why MaGeneLearn?
 
 * **1) Phylogeny-aware train/test split**
 
 Provide two levels of phylogenetic clustering in your metadata:
 
-*Outbreak-like clustering (fine scale)*: groups of near-identical isolates that must not be split across train/test (prevents data leakage). Examples: EnteroBase HC5, or your own SNP/cgMLST cluster IDs.
+*	*Outbreak-like clustering (fine scale)*: groups of near-identical isolates that must not be split across train/test (prevents data leakage). Examples: EnteroBase HC5, or your own SNP/cgMLST cluster IDs.
 
-*Higher-level clustering (coarser scale)*: used for stratification so both train and test retain similar composition across lineages. Examples: ST, LINEAGE, EnteroBase HC50.
+*	*Higher-level clustering (coarser scale)*: used for stratification so both train and test retain similar composition across lineages. Examples: ST, LINEAGE, EnteroBase HC50.
 MaGeneLearn keeps each outbreak-like cluster entirely in one split and stratifies by the higher-level clusters.
 
 * **2) Outcome-stratified split** 
@@ -33,13 +49,13 @@ Any binary presence/absence features are supported: unitigs, k-mers, one-hot cgM
 * **6)Built-in feature reduction**
 Large initial feature spaces often contain noise. MaGeneLearn can reduce to the most informative set using Chi-square and/or MUVR, improving signal-to-noise before model fitting.
 
-Metadata requirements (for splitting):
+**Metadata requirements (for splitting):**
 
-A column with outcome/label.
+*	A column with outcome (**label**).
 
-A fine-scale cluster column (outbreak-like; e.g., HC5/SNP/cgMLST cluster).
+*	A fine-scale cluster column (**group**) (outbreak-like; e.g., HC5/SNP/cgMLST cluster).
 
-A coarse-scale cluster column for stratification (e.g., ST/LINEAGE/HC50).
+*	A coarse-scale cluster column for stratification (**lineage**) (e.g., ST/LINEAGE/HC50).
 
 
 
@@ -69,15 +85,6 @@ The wrapper exposes **two** high-level commands:
 |---------|--------------|
 | `magene-learn train` | end-to-end model building (split → *optional* feature-selection → fit → CV → eval) |
 | `magene-learn test`  | evaluate an already–trained model on an external set ( **no CV** ) |
-
-
-```bash
-maGeneLearn train [OPTIONS]               # model building pipeline
-maGeneLearn test  [OPTIONS]               # evaluate existing model
-maGeneLearn --help                        # top-level help
-maGeneLearn <subcmd> --help               # help for a sub-command
-```
-
 
 
 ## 4 · Inputs for training a new model
@@ -129,7 +136,7 @@ maGeneLearn <subcmd> --help               # help for a sub-command
 | `--lr-penalty`      | l2                 | LR penalty: 'l1 | l2 | elasticnet' |
 | `--dry-run`          | –                       | print commands, do nothing                             |
 
-For a full list of tunnable flags, please run: 
+### For a full list of tunnable flags, please run: 
 
 ```bash
 maGeneLearn train --help     
@@ -143,7 +150,7 @@ maGeneLearn test --help
 * **A) Split your data into training and test and run feature selection once**
 Use --chisq and/or --muvr with --feature-selection-only to stop after selecting the most predictive features. 
 
-# Runs split → Chi² → MUVR → FINAL FEATURES, then exits
+### Runs split → Chi² → MUVR → FINAL FEATURES, then exits
 ```bash
 maGeneLearn train \
   --feature-selection-only \
@@ -361,7 +368,7 @@ In this scenario, you have already split your data. Now you would like to select
 Use --chisq and/or --muvr with --feature-selection-only to stop after selecting the most predictive features. 
 
 
-# Runs Chi² → MUVR → FINAL FEATURES, then exits
+### Runs Chi² → MUVR → FINAL FEATURES, then exits
 ```bash
 maGeneLearn train \
   --no-split \
@@ -383,7 +390,7 @@ maGeneLearn train \
 * **8.2) Skip Chi² (use an already-filtered matrix, still run MUVR)**  
 In this scenario, you start with not-so-many features (Around 600K~1M). Therefore, you would like to skip Chi² step and use MUVR as the sole feature selection method. In this case, you will have to pass the same feature file into two different flags: `--features` and `--chisq-file`.
 
-# Runs split → MUVR → FINAL FEATURES, then exits
+### Runs split → MUVR → FINAL FEATURES, then exits
 
 ```bash
   maGeneLearn train \
