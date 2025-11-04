@@ -328,7 +328,7 @@ For this you will use the following flags and files:
 ```bash
 maGeneLearn test \
   --model-file runs/RFC/04_model/STEC_RFC_random.joblib \
-  --muvr-file selected_features/02_muvr/STEC_muvr_RFC_max.tsv \
+  --muvr-file selected_features/02_muvr/STEC_muvr_RFC_min.tsv \
   --features test/external_data/full_features_external.tsv \
   --test-metadata test/external_data/metadata_external.tsv \
   --name External_STEC \
@@ -349,7 +349,7 @@ You will require the `--predict-only` flag:
 maGeneLearn test \
   --predict-only \
   --model-file runs/RFC/04_model/STEC_RFC_random.joblib \
-  --muvr-file selected_features/02_muvr/STEC_muvr_RFC_max.tsv \
+  --muvr-file selected_features/02_muvr/STEC_muvr_RFC_min.tsv \
   --features test/external_data/full_features_unlabelled.tsv \
   --name unlabelled_isolates \
   --output-dir runs/RFC
