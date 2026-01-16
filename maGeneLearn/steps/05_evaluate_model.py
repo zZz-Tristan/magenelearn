@@ -251,8 +251,19 @@ def run_evaluation(
         logging.info("Predictions written to ➜ %s", output_file)
         return
 
-    if label_col not in df.columns or group_col not in df.columns:
-        raise KeyError("label or group column missing in TSV header")
+    # ------------------------------
+    # Column requirements:
+    # - label is required for any evaluation (predict_only handled above)
+    # - group is required ONLY for CV splitting
+    # - in --no_cv, group may be absent; if present it will still be dropped from X
+    # ------------------------------
+
+    if label_col not in df.columns:
+        raise KeyError(f"Label column '{label_col}' missing in TSV header")
+
+    if (not no_cv) and (group_col not in df.columns):
+        raise KeyError(f"Group column '{group_col}' missing in TSV header (required for grouped CV)")
+
 
     # 3️⃣  Encode labels --------------------------------------------------------
     y_raw = df[label_col].values
@@ -276,8 +287,17 @@ def run_evaluation(
         class_names = list(le.classes_)
         logging.info("LabelEncoder fitted directly on input labels: %s", class_names)
 
-    X = df.drop(columns=[label_col, group_col])
-    groups = df[group_col].values
+#    X = df.drop(columns=[label_col, group_col])
+#    groups = df[group_col].values
+    # Always drop label (and group if present) so they never leak into model features.
+    drop_cols = [label_col]
+    if group_col in df.columns:
+        drop_cols.append(group_col)
+    X = df.drop(columns=drop_cols)
+
+    # groups only needed for CV splitting
+    groups = df[group_col].values if (not no_cv) else None
+
 
     problem_type = infer_problem_type(y)
 
@@ -307,6 +327,9 @@ def run_evaluation(
         if n_splits is None:
             raise ValueError("n_splits required when CV enabled")
     # 2️⃣  Build CV iterator ----------------------------------------------------
+ #       cv_iter = get_cv_iterator(y, groups, n_splits)
+        if groups is None:
+            raise RuntimeError("Internal error: groups is None while CV is enabled")
         cv_iter = get_cv_iterator(y, groups, n_splits)
 
         # 3️⃣  Fold loop ------------------------------------------------------------

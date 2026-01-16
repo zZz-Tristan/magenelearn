@@ -144,7 +144,8 @@ def load_selected(muvr_path, label_col):
 
     return list(df.columns)
 
-def load_split_metadata(meta_path, label_col, group_col):
+#def load_split_metadata(meta_path, label_col, group_col):
+def load_split_metadata(meta_path, label_col, group_col=None):
     """
     Load metadata split file, ensuring label and group columns exist.
     Returns:
@@ -154,10 +155,24 @@ def load_split_metadata(meta_path, label_col, group_col):
     meta = pd.read_csv(meta_path, sep='\t', index_col=0)
     dupes = meta.index[meta.index.duplicated()]
     print(len(dupes), "duplicate sample IDs:", dupes[:10])
-    missing = [col for col in (label_col, group_col) if col not in meta.columns]
-    if missing:
-        raise SystemExit(f"Error: columns {missing} not found in metadata file {meta_path}")
-    return meta[label_col], meta[group_col]
+    #missing = [col for col in (label_col, group_col) if col not in meta.columns]
+    #if missing:
+    #    raise SystemExit(f"Error: columns {missing} not found in metadata file {meta_path}")
+    #return meta[label_col], meta[group_col]
+    if label_col is None:
+        raise SystemExit("Error: --label is required when metadata is provided.")
+    if label_col not in meta.columns:
+        raise SystemExit(f"Error: label column '{label_col}' not found in metadata file {meta_path}")
+
+    groups = None
+    if group_col:
+        if group_col in meta.columns:
+            groups = meta[group_col]
+        else:
+            print(f"[WARN] group column '{group_col}' not found in {meta_path}; proceeding without groups.")
+
+    return meta[label_col], groups
+
 
 def extract_features(chisq_file: str, selected_features: list[str]) -> pd.DataFrame:
     """Wrapper that calls the efficient column loader."""
@@ -176,7 +191,11 @@ def process_split(meta_path, chisq_file, features, label_col, group_col, output_
     """
     labels, groups = load_split_metadata(meta_path, label_col, group_col)
     feats = extract_features(chisq_file, features)
-    df = pd.concat([feats, labels, groups], axis=1, join='inner')
+#    df = pd.concat([feats, labels, groups], axis=1, join='inner')
+    parts = [feats, labels]
+    if groups is not None:
+        parts.append(groups)
+    df = pd.concat(parts, axis=1, join='inner')
 
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -188,14 +207,13 @@ def process_split(meta_path, chisq_file, features, label_col, group_col, output_
 def main():
     args = parse_arguments()
 
-    # if not (args.train_metadata or args.test_metadata):
-    #     sys.exit(
-    #         "ERROR: You must supply either --train_metadata, --test_metadata, "
-    #         "or both.  Nothing to extract otherwise."
-    #     )
-
     if not (args.train_metadata or args.test_metadata):
         print("⚠️  No metadata provided — extracting features only (predict-only mode).")
+    else:
+        # Metadata provided => label must be provided and present in metadata
+        if not args.label:
+            raise SystemExit("Error: --label is required when --train_metadata/--test_metadata is provided.")
+        # group_column may be None; that's OK
 
 
     print(f"Loading selected features from {args.muvr_file}")
