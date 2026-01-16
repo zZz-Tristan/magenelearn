@@ -775,9 +775,10 @@ def test(click_ctx: click.Context, *,
             "--scoring", ctx.scoring,
             "--name", ctx.name + "_test",
         ]
-        run(cmd, cwd=d, log=d / "predict.log", dry=ctx.dry_run)
         if skip_svm_importance:
             cmd.append("--skip-svm-importance")
+
+        run(cmd, cwd=d, log=d / "predict.log", dry=ctx.dry_run)
     else:
         evaluate_holdout(ctx, skip_svm_importance=skip_svm_importance)
 

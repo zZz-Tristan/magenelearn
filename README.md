@@ -334,7 +334,6 @@ maGeneLearn test \
   --name External_STEC \
   --output-dir runs/RFC \
   --label SYMP \
-  --group-column t5
 ```
 
 This will create the same outputs as above.
