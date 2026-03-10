@@ -6,11 +6,14 @@ import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from py_muvr.feature_selector import FeatureSelector
 from concurrent.futures import ProcessPoolExecutor
+from boruta import BorutaPy
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
 
 """
-02_muvr_feature_selection.py
+02_feature_selection.py
 
-Runs MUVR-based recursive feature selection on a training dataset combined with a chisq feature matrix.
+Runs MUVR-based recursive or Boruta feature selection on a training dataset combined with a chisq feature matrix.
 
 Inputs (CLI args):
   --train_data / -t          Path to input training data TSV. Must include:
@@ -27,7 +30,8 @@ Inputs (CLI args):
   --filtered_train_dir / -f  Directory to write deduplicated training data TSV.
   --output / -o              Directory under which MUVR results will be saved.
   --name / -n                Base filename prefix for all outputs.
-  --n-repetitions            Number of MUVR repetitions (default: 10).
+  --n-repetitions            Number of MUVR repetitions (default: 10)/Number of boruta repetitions (default: 100).
+  --max-iter                 Number of boruta repetitions (default: 100).
   --n-outer                  Number of outer folds for MUVR (default: 5).
   --n-inner                  Number of inner folds for MUVR (default: 4).
   --metric                   Feature selection metric (default: MISS).
@@ -40,12 +44,12 @@ Outputs:
      (samples deduplicated on ['group-col','outcome-col'], header preserved)
 
   2. MUVR-selected feature TSVs (three levels):
-       <output>/<class_type>/<name>_muvr_<model>_min.tsv  # minimal feature set
-       <output>/<class_type>/<name>_muvr_<model>_mid.tsv  # mid-level feature set
-       <output>/<class_type>/<name>_muvr_<model>_max.tsv  # maximal feature set
+       <output>/<class_type>/<name>_<feature reduction>_<model>_min.tsv  # minimal feature set
+       <output>/<class_type>/<name>_<feature reduction>_<model>_mid.tsv  # mid-level feature set
+       <output>/<class_type>/<name>_<feature reduction>_<model>_max.tsv  # maximal feature set
 
 Usage Example:
-  python 02_muvr_feature_selection.py \
+  python 02_feature_selection.py \
     --train_data data/train_set.tsv \
     --chisq_file data/full_chisq_matrix.tsv \
     --model RFC \
@@ -56,6 +60,7 @@ Usage Example:
     --output rsults/muvr_features \
     --name study1 \
     --n-repetitions 10 \
+    --max-iter 100 \
     --n-outer 5 \
     --n-inner 4 \
     --metric MISS \
@@ -65,7 +70,7 @@ Usage Example:
 
 def get_opts_muvr():
     parser = argparse.ArgumentParser(
-        description="Run MUVR-based feature selection on input data."
+        description="Run MUVR/Boruta-based feature selection on input data."
     )
     parser.add_argument('--train_data', '-t', type=str, required=True,
                         help='Path to training data TSV')
@@ -80,11 +85,13 @@ def get_opts_muvr():
     parser.add_argument('--filtered_train_dir', '-f', type=str, required=True,
                         help='Directory to save the filtered training data (after deduplication)')
     parser.add_argument('--output', '-o', type=str, required=True,
-                        help='Output directory for storing MUVR results')
+                        help='Output directory for storing MUVR/Boruta results')
     parser.add_argument('--name', '-n', type=str, required=True,
                         help='Base filename for outputs')
     parser.add_argument('--n-repetitions', type=int, default=10,
                         help='Number of MUVR repetitions (default: 10)')
+    parser.add_argument('--max-iter', type=int, default=100,
+                        help='Number of boruta repetitions (default: 100)')
     parser.add_argument('--n-outer', type=int, default=5,
                         help='Number of outer folds for MUVR (default: 5)')
     parser.add_argument('--n-inner', type=int, default=4,
@@ -96,7 +103,8 @@ def get_opts_muvr():
     parser.add_argument('--remove_na', action='store_true',
                         help = 'If set, drop any rows with NaN/NA in outcome or features (and warn)')
     parser.add_argument('--n-jobs', type=int, default=1,
-                        help='Number of parallel jobs for MUVR (default: 1 = sequential)')
+                        help='Number of parallel jobs for MUVR/Boruta (default: 1 = sequential)')
+    parser.add_argument('--method', type=str, choices=['muvr', 'boruta'], default='muvr', help='Feature selection method: muvr (default) or boruta')
     args = parser.parse_args()
     return (
         args.train_data,
@@ -108,11 +116,13 @@ def get_opts_muvr():
         args.output,
         args.name,
         args.n_repetitions,
+        args.max_iter,
         args.n_outer,
         args.n_inner,
         args.metric,
         args.features_dropout_rate,
-        args.remove_na
+        args.remove_na,
+        args.method
     )
 
 def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, remove_na=False):
@@ -138,7 +148,7 @@ def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, rem
 
     return train_data_muvr
 
-def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcome_col, n_repetitions, n_outer, n_inner, metric, features_dropout_rate, remove_na=False, n_jobs=1):
+def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcome_col, n_repetitions, max_iter, n_outer, n_inner, metric, features_dropout_rate, remove_na=False, n_jobs=1, method='muvr'):
 
     target_col = outcome_col
     train_data_muvr = train_data_muvr[[target_col]]
@@ -203,39 +213,71 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     X_muvr = model_input.drop(columns=[target_col]).to_numpy()
     feature_names = model_input.drop(columns=[target_col]).columns
 
-    feature_selector = FeatureSelector(
-        n_repetitions=n_repetitions,
-        n_outer=n_outer,
-        n_inner=n_inner,
-        estimator=model,
-        metric=metric,
-        features_dropout_rate=features_dropout_rate
-    )
+    if method == "muvr":
+        feature_selector = FeatureSelector(
+            n_repetitions=n_repetitions,
+            n_outer=n_outer,
+            n_inner=n_inner,
+            estimator=model,
+            metric=metric,
+            features_dropout_rate=features_dropout_rate
+        )
 
-    print("Running MUVR")
-    executor = None
-    if n_jobs != 1:
-        executor = ProcessPoolExecutor(max_workers=n_jobs)
+        print("Running MUVR")
+        executor = None
+        if n_jobs != 1:
+            executor = ProcessPoolExecutor(max_workers=n_jobs)
 
-    feature_selector.fit(X_muvr, y_variable, executor=executor)
-    selected_features = feature_selector.get_selected_features(feature_names=feature_names)
+        feature_selector.fit(X_muvr, y_variable, executor=executor)
+        selected_features = feature_selector.get_selected_features(feature_names=feature_names)
 
-    # Obtain a dataframe containing MUVR selected features
-    df_muvr_min = model_input[list(selected_features.min)]
-    df_muvr_mid = model_input[list(selected_features.mid)]
-    df_muvr_max = model_input[list(selected_features.max)]
+        # Obtain a dataframe containing MUVR selected features
+        df_min = model_input[list(selected_features.min)]
+        df_mid = model_input[list(selected_features.mid)]
+        df_max = model_input[list(selected_features.max)]
 
-    #Write features to a new file.
-    os.makedirs(output_dir, exist_ok=True)
-    min_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_min.tsv')
-    mid_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_mid.tsv')
-    max_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_max.tsv')
+        #Write features to a new file.
+        os.makedirs(output_dir, exist_ok=True)
+        min_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_min.tsv')
+        mid_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_mid.tsv')
+        max_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_max.tsv')
 
-    df_muvr_min.to_csv(min_features_file_name, sep='\t')
-    df_muvr_mid.to_csv(mid_features_file_name, sep='\t')
-    df_muvr_max.to_csv(max_features_file_name, sep='\t')
+        df_min.to_csv(min_features_file_name, sep='\t')
+        df_mid.to_csv(mid_features_file_name, sep='\t')
+        df_max.to_csv(max_features_file_name, sep='\t')
 
-    return df_muvr_min,df_muvr_mid,df_muvr_max
+        return df_min,df_mid,df_max
+    
+    elif method == "boruta":
+        print("Running Boruta feature selection")
+        if model == "RFC":
+            estimator = RandomForestClassifier(n_jobs=n_jobs, class_weight="balanced", random_state=42)
+        elif model == "XGBC":
+            estimator = XGBClassifier(n_jobs=n_jobs, eval_metric="logloss", random_state=42)
+        else:
+            sys.exit("Boruta only supports RFC or XGBC")
+        
+        boruta = BorutaPy(
+            estimator=estimator,
+            n_estimators='auto',
+            verbose=2,
+            random_state=42,
+            max_iter=max_iter
+        )
+
+        boruta.fit(X_muvr, y_variable)
+
+        selected_mask = boruta.support_
+        selected_features = feature_names[selected_mask]
+        
+        df_min = model_input[list(selected_features)]
+
+        os.makedirs(output_dir, exist_ok=True)
+        min_features_file_name = os.path.join(output_dir, f'{name}_boruta_{model}_min.tsv')
+
+        df_min.to_csv(min_features_file_name, sep='\t')
+
+        return df_min
 
 #######################################################
 #
@@ -254,11 +296,13 @@ if __name__ == "__main__":
             output_dir,
             name,
             n_repetitions,
+            max_iter,
             n_outer,
             n_inner,
             metric,
             features_dropout_rate,
-            remove_na
+            remove_na,
+            method
         ) = get_opts_muvr()
         print("Filtering data")
         train_filtered = prepare_data_muvr(
@@ -270,7 +314,7 @@ if __name__ == "__main__":
             remove_na=remove_na
         )
 
-        print("Running MUVR feature reduction")
+        print("Running MUVR/Boruta feature reduction")
         feature_reduction(
             train_filtered,
             chisq_file,
@@ -279,11 +323,12 @@ if __name__ == "__main__":
             name,
             outcome_col,
             n_repetitions,
+            max_iter,
             n_outer,
             n_inner,
             metric,
             features_dropout_rate,
-            remove_na=remove_na
+            remove_na=remove_na,
+            method=method
         )
-
 
