@@ -33,8 +33,9 @@ magene-learn train [OPTIONS]
 | `--features-test`        | Pre‑computed **test** feature table; if omitted, Step 07 is skipped |
 | `--chisq / --no-chisq`   | Run Chi² selection (Step 01) |
 | `--muvr / --no-muvr`     | Run MUVR selection (Step 02) – *requires* `--chisq` |
+| `--boruta / --no-boruta` | Run Boruta selection (step 02) - *requires* `--chisq` |
 | `--no-split`             | Skip Step 00; assumes existing `*_train.tsv` / `*_test.tsv` |
-| `--upsampling`           | `none` (default) \| `smote` \| `random` |
+| `--upsampling`           | `none` (default) \| `smote` \| `random` \| `enn` \| `smoteenn` \| `random_under` |
 | `--n-splits`             | Folds for cross‑validation (default **5**) |
 | `--output-dir`           | Base directory (default: timestamp, e.g. `250704_1532`) |
 | `--dry-run`              | Print planned shell commands but **do not execute** |
@@ -44,9 +45,9 @@ magene-learn train [OPTIONS]
 <output>/
 ├── 00_data_split/        *_train.tsv  *_test.tsv
 ├── 01_chisq/             <name>_top100000_features.tsv
-├── 02_muvr/              <name>_muvr_<model>_min.tsv
+├── 02_feature_selection/ <name>_<sampling method>_<model>_min.tsv
 ├── 03_final_features/    <name>_train.tsv  <name>_test.tsv
-├── 04_model/             <name>_<model>_<upsampling>.joblib
+├── 04_model/             <name>_<model>_<sampling method>.joblib
 ├── 05_cv/                cross‑validation metrics
 ├── 06_train_eval/        evaluation on training folds
 └── 07_test_eval/         evaluation on hold‑out set (only if `--features-test`)
@@ -54,7 +55,7 @@ magene-learn train [OPTIONS]
 
 ### Usage examples
 ```bash
-# Full workflow: split → Chi² → MUVR → train (RFC, 5‑fold CV)
+# Full workflow: split → Chi² → feature selection → train (RFC, 5‑fold CV)
 magene-learn train \
     --meta-file meta.tsv \
     --features kmers.tsv \
@@ -150,8 +151,8 @@ class Context:
     base_dir: Path
     name: str
     model: str  # "RFC" | "XGBC" | "SVM"
-    muvr_model: str
-    upsample: str  # "none" | "smote" | "random"
+    feature_model: str
+    upsample: str  # "none" | "smote" | "random" | "enn" | "smoteenn" | "random_under"
     n_splits: int
     n_splits_cv: int = 7
     dry_run: bool = False
@@ -171,7 +172,7 @@ class Context:
     train_meta: Path | None = None
     test_meta: Path | None = None
     chisq_file: Path | None = None
-    muvr_file: Path | None = None
+    feature_file: Path | None = None
     feat_train: Path | None = None
     feat_test: Path | None = None
     model_file: Path | None = None
@@ -260,15 +261,15 @@ def chisq(ctx: Context, features: Path, features2: Path | None) -> None:
     ctx.chisq_file = (d / f"{ctx.name}_top{ctx.k}_features.tsv").resolve()
 
 
-def muvr(ctx: Context) -> None:
+def feature_selection(ctx: Context, method: str) -> None:
     if not ctx.chisq_file:
-        click.echo("Error: --muvr requires Chi² step", err=True)
+        click.echo("Error: --muvr/--boruta requires Chi² step", err=True)
         sys.exit(1)
 
     d = ctx.step_dir(2, "muvr")
-    script = STEPS_DIR / "02_muvr_feature_selection.py"
+    script = STEPS_DIR / "02_feature_selection.py"
 
-    # tmp folder that holds the Chi²-filtered training matrix for MUVR
+    # tmp folder that holds the Chi²-filtered training matrix for MUVR/Boruta
     tmp_dir = (ctx.base_dir / "tmp_muvr_data").resolve()
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -276,28 +277,29 @@ def muvr(ctx: Context) -> None:
         sys.executable, str(script),
         "--train_data", str(ctx.train_meta.resolve()),
         "--chisq_file", str(ctx.chisq_file.resolve()),
-        "--model", ctx.muvr_model,
+        "--model", ctx.feature_model,
         "--output", str(d),
         "--group_col", ctx.group_col,
         "--outcome_col", ctx.label,
         "--filtered_train_dir", str(tmp_dir),
         "--name", ctx.name,
         "--features-dropout-rate", str(ctx.dropout_rate),
-        "--n-jobs", str(ctx.n_jobs)
+        "--n-jobs", str(ctx.n_jobs),
+        "--method", method
     ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run, stream=True)
 
-    matches = sorted(d.glob(f"{ctx.name}_muvr_{ctx.muvr_model}_min.tsv"))
+    matches = sorted(d.glob(f"{ctx.name}_{method}_{ctx.feature_model}_min.tsv"))
     if not matches:
-        click.echo("MUVR output not found", err=True)
+        click.echo("MUVR/boruta output not found", err=True)
         sys.exit(1)
-    ctx.muvr_file = matches[0].resolve()
+    ctx.feature_file = matches[0].resolve()
 
 
 def extract_features(ctx: Context) -> None:
     """
     Build the final feature matrices.
 
-    On the Chi² + MUVR branch it calls 03_extract_features.py, forwarding
+    On the Chi² + MUVR/Boruta branch it calls 03_extract_features.py, forwarding
     the correct label/group names and *optionally* the test-metadata file.
     """
     # -------------------------------------------------------- short-circuit
@@ -307,11 +309,11 @@ def extract_features(ctx: Context) -> None:
     d = ctx.step_dir(3, "final_features")
     script = STEPS_DIR / "03_extract_features.py"
 
-    # -------------------------------------------------- Chi² + MUVR branch
-    if ctx.muvr_file:
+    # -------------------------------------------------- Chi² + MUVR/Boruta branch
+    if ctx.feature_file:
         cmd = [
             sys.executable, str(script),
-            "--muvr_file",      str(ctx.muvr_file),
+            "--feature_file",      str(ctx.feature_file),
             "--chisq_file",     str(ctx.full_matrix),
             "--train_metadata", str(ctx.train_meta),
             "--output_dir",     str(d),
@@ -333,7 +335,7 @@ def extract_features(ctx: Context) -> None:
 
     # --------------------------------------------- Chi² without MUVR → error
     elif ctx.chisq_file:
-        click.echo("Chi² without MUVR not supported in this pipeline.", err=True)
+        click.echo("Chi² without MUVR/Boruta not supported in this pipeline.", err=True)
         sys.exit(1)
 
     # --------------------------------------- no feature-selection branch
@@ -443,8 +445,8 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--features2", type=click.Path(exists=True, path_type=Path))
 @click.option("--name", required=True)
 @click.option("--model", type=click.Choice(["XGBC", "RFC", "SVM","LR"]), required=False, help="Classifier used in the final training step (04_train_model.py)")
-@click.option("--muvr-model","muvr_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR feature-selection step ""(defaults to the value of --model)")
-@click.option("--upsampling", type=click.Choice(["none", "smote", "random"]), default="none")
+@click.option("--feature-model","feature_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR/Boruta feature-selection step ""(defaults to the value of --model)")
+@click.option("--upsampling", type=click.Choice(["none", "smote", "random", "enn", "smoteenn", "random_under"]), default="none")
 @click.option("--lr-penalty", type=click.Choice(["l1", "l2", "elasticnet"]), default="l2",help="Penalty type for Logistic Regression (default: l2)")
 @click.option("--xgb-policy", type=click.Choice(["depthwise", "lossguide"]), default="depthwise", help="Tree growth policy for XGBoost models (ignored for other models).")
 @click.option("--n-splits", "n_splits", default=5, show_default=True,  help="Number of folds used in the initial train/test split (Step 00)")
@@ -452,6 +454,7 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--output-dir", type=click.Path(path_type=Path))
 @click.option("--chisq/--no-chisq", "chisq_flag", default=False)
 @click.option("--muvr/--no-muvr", "muvr_flag", default=False)
+@click.option("--boruta/--no-boruta", "boruta_flag", default=False)
 @click.option("--no-split", is_flag=True, help="Skip dataset split step")
 @click.option("--features-train", type=click.Path(exists=True, path_type=Path))
 @click.option("--features-test", type=click.Path(exists=True, path_type=Path))
@@ -468,7 +471,7 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--n-jobs", "n_jobs", type=int, default=-1,
               help="Number of parallel jobs for feature selection and model training (default: -1, all cores)")
 @click.option("--feature-selection-only", is_flag=True,
-              help="Run up to Step 03 (Chi²+MUVR/extract_features) and exit without training a model.")
+              help="Run up to Step 03 (Chi²+MUVR/Boruta/extract_features) and exit without training a model.")
 
 @click.pass_context
 
@@ -490,11 +493,12 @@ def train(click_ctx: click.Context, *,
           chisq_flag:   bool,
           chisq_file:   Path | None,
           muvr_flag:    bool,
+          boruta_flag:  bool,
           k:            int,
           # core settings
           name:         str,
           model:        str,
-          muvr_model:   str,   # fallback
+          feature_model:   str,   # fallback
           lr_penalty:   str,
           upsampling:   str,
           n_splits:     int,
@@ -507,7 +511,7 @@ def train(click_ctx: click.Context, *,
           xgb_policy: str,
           n_jobs: int,
           output_dir:   Path | None) -> None:
-    """Train model end-to-end, with optional Chi² + MUVR feature selection."""
+    """Train model end-to-end, with optional Chi² + MUVR/Boruta feature selection."""
 
     # ------------------------------------------------------------------ sanity
     if bool(meta_file) == bool(train_meta):
@@ -518,14 +522,17 @@ def train(click_ctx: click.Context, *,
     if chisq_file and chisq_flag:
         raise click.UsageError("--chisq and --chisq-file are mutually exclusive.")
 
-    if muvr_flag and not (chisq_flag or chisq_file):
-        raise click.UsageError("--muvr requires --chisq or --chisq-file.")
+    if (muvr_flag or boruta_flag) and not (chisq_flag or chisq_file):
+        raise click.UsageError("--muvr/--boruta requires --chisq or --chisq-file.")
 
-    if muvr_flag and features is None:
+    if (muvr_flag or boruta_flag) and features is None:
         raise click.UsageError(
-            "--muvr also needs the *full* feature matrix via --features "
+            "--muvr/--boruta also needs the *full* feature matrix via --features "
             "so that Step 03 can extract the selected k-mers."
         )
+
+    if muvr_flag and boruta_flag:
+        raise click.UsageError("Choose either --muvr or --boruta, not both.")
 
 
 
@@ -548,7 +555,7 @@ def train(click_ctx: click.Context, *,
         n_iter     = n_iter,
         scoring    = scoring,
         k          = k,
-        muvr_model=muvr_model or model, # fallback
+        feature_model=feature_model or model, # fallback
         lineage_col = lineage_col,
         n_jobs=n_jobs,
         dropout_rate=dropout_rate,
@@ -581,6 +588,12 @@ def train(click_ctx: click.Context, *,
             "--muvr needs the ORIGINAL k-mer matrix via --features "
             "(even if you hand in --features-train)."
         )
+
+    if boruta_flag and ctx.full_matrix is None:
+        raise click.UsageError(
+            "--Boruta needs the ORIGINAL k-mer matrix via --features "
+            "(even if you hand in --features-train)."
+        )
     if not feature_selection_only and model is None:
         raise click.UsageError("--model is required unless --feature-selection-only is used.")
 
@@ -600,11 +613,14 @@ def train(click_ctx: click.Context, *,
     if chisq_flag:
         plan.append((True, lambda c: chisq(c, features, features2)))
 
-    # ---------------- step 02 – MUVR
+    # ---------------- step 02 – MUVR/Boruta
     if muvr_flag:
-        plan.append((True, muvr))
+        plan.append((True, lambda c: feature_selection(c, "muvr")))
+    
+    if boruta_flag:
+        plan.append((True, lambda c: feature_selection(c, "boruta")))
 
-    #ADD feautre extraction to the plan
+    #ADD feature extraction to the plan
     plan.append((True, extract_features))
 
     # ---------------- downstream steps
@@ -636,9 +652,9 @@ def train(click_ctx: click.Context, *,
 @click.option("--group-column", default="group")
 @click.option("--output-dir", type=click.Path(path_type=Path))
 #extract features
-@click.option("--features","full_features",type=click.Path(exists=True, path_type=Path),required=False,help="Full k-mer count matrix (will be filtered by --muvr-file).")
+@click.option("--features","full_features",type=click.Path(exists=True, path_type=Path),required=False,help="Full k-mer count matrix (will be filtered by --feature-file).")
 @click.option("--test-metadata",  type=click.Path(exists=True, path_type=Path), help="Metadata TSV for the external test set (required with --extract-features)")
-@click.option("--muvr-file",  type=click.Path(exists=True, path_type=Path), help="*_muvr_*_min.tsv file with selected features(required with --extract-features)")
+@click.option("--feature-file",  type=click.Path(exists=True, path_type=Path), help="*_*_*_min.tsv file with selected features(required with --extract-features)")
 @click.option("--predict-only", is_flag=True, help="Only output predictions without computing performance metrics.")
 @click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
@@ -654,7 +670,7 @@ def test(click_ctx: click.Context, *,
          label: str,
          group_column: str,
          output_dir: Path | None,
-         muvr_file: Path | None,
+         feature_file: Path | None,
          test_metadata : Path | None,
          predict_only: bool,
          skip_svm_importance: bool) -> None:
@@ -667,8 +683,8 @@ def test(click_ctx: click.Context, *,
             "or --features-test (ready feature table)."
         )
 
-    if full_features and not muvr_file:
-        raise click.UsageError("--features also needs --muvr-file")
+    if full_features and not feature_file:
+        raise click.UsageError("--features also needs --feature-file")
 
     if full_features and not predict_only and not test_metadata:
         raise click.UsageError("--features also needs --test-metadata unless using --predict-only")
@@ -680,7 +696,7 @@ def test(click_ctx: click.Context, *,
     ctx = Context(base,
                   name,
                   model="NA",
-                  muvr_model="None",
+                  feature_model="None",
                   upsample="none",
                   n_splits=0,
                   scoring=scoring,
@@ -700,7 +716,7 @@ def test(click_ctx: click.Context, *,
 
         cmd = [
             sys.executable, str(script),
-            "--muvr_file", str(muvr_file.resolve()),
+            "--feature_file", str(feature_file.resolve()),
             "--chisq_file", str(ctx.full_matrix),
             "--output_dir", str(d),
             "--name", name,
