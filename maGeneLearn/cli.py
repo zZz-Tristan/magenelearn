@@ -39,6 +39,7 @@ magene-learn train [OPTIONS]
 | `--n-splits`             | Folds for cross‑validation (default **5**) |
 | `--output-dir`           | Base directory (default: timestamp, e.g. `250704_1532`) |
 | `--dry-run`              | Print planned shell commands but **do not execute** |
+| `--id-col`               | Column name to use as the sample ID/index (default **SRA**) |
 
 ### Outputs (directory tree)
 ```
@@ -158,6 +159,7 @@ class Context:
     dry_run: bool = False
     label: str = "outcome"
     group_col: str = "group"
+    id_col: str= "SRA"
     n_iter: int = 100
     scoring: str = "balanced_accuracy"
     k: int = 100000
@@ -166,6 +168,9 @@ class Context:
     n_jobs: int = -1
     lr_penalty: str = "l2"
     xgb_policy: str = "depthwise"
+    boruta_perc: int = 100
+    boruta_alpha: float = 0.05
+    boruta_max_iter: int = 100
 
 
     # artefacts populated as we go
@@ -232,6 +237,7 @@ def split(ctx: Context, meta_file: Path) -> None:
     run([
         sys.executable, str(script),
         "--meta-file", str(meta_file.resolve()),
+        "--id-col", str(ctx.id_col), #optional
         "--name", ctx.name,
         "--out-dir", str(d),
         "--lineage-col", ctx.lineage_col,
@@ -285,7 +291,10 @@ def feature_selection(ctx: Context, method: str) -> None:
         "--name", ctx.name,
         "--features-dropout-rate", str(ctx.dropout_rate),
         "--n-jobs", str(ctx.n_jobs),
-        "--method", method
+        "--method", method,
+        "--perc", str(ctx.boruta_perc),
+        "--alpha", str(ctx.boruta_alpha),
+        "--max-iter", str(ctx.boruta_max_iter)
     ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run, stream=True)
 
     matches = sorted(d.glob(f"{ctx.name}_{method}_{ctx.feature_model}_min.tsv"))
@@ -441,6 +450,7 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--test-meta",  type=click.Path(exists=True, path_type=Path),
               help="Pre-split test metadata TSV (optional)")
 @click.option("--lineage-col", default="LINEAGE", help="Column holding lineage/clade assignments (used only by step 00 when the split is executed).")
+@click.option("--id-col", default="SRA", help="Column name to use as the sample ID/index (default: SRA).")
 @click.option("--features", type=click.Path(exists=True, path_type=Path), required=False)
 @click.option("--features2", type=click.Path(exists=True, path_type=Path))
 @click.option("--name", required=True)
@@ -472,6 +482,9 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
               help="Number of parallel jobs for feature selection and model training (default: -1, all cores)")
 @click.option("--feature-selection-only", is_flag=True,
               help="Run up to Step 03 (Chi²+MUVR/Boruta/extract_features) and exit without training a model.")
+@click.option("--boruta-perc", "boruta_perc", type=click.IntRange(1, 100), default=100, show_default=True, help="Boruta percentile for shadow feature comparison (default: 100)")
+@click.option("--boruta-alpha", "boruta_alpha", type=float, default=0.05, show_default=True, help="Boruta significance threshold (default: 0.05)")
+@click.option("--boruta-max-iter", "boruta_max_iter", type=int, default=100, show_default=True, help="Maximum number of Boruta iterations performed (default: 100)")
 
 @click.pass_context
 
@@ -484,6 +497,7 @@ def train(click_ctx: click.Context, *,
           feature_selection_only: bool,
           #split
           lineage_col: str,
+          id_col: str,
           # features
           features:    Path | None,
           features2:    Path | None,
@@ -494,6 +508,9 @@ def train(click_ctx: click.Context, *,
           chisq_file:   Path | None,
           muvr_flag:    bool,
           boruta_flag:  bool,
+          boruta_perc:  int,
+          boruta_alpha: float,
+          boruta_max_iter: int,
           k:            int,
           # core settings
           name:         str,
@@ -557,10 +574,14 @@ def train(click_ctx: click.Context, *,
         k          = k,
         feature_model=feature_model or model, # fallback
         lineage_col = lineage_col,
+        id_col     = id_col,
         n_jobs=n_jobs,
         dropout_rate=dropout_rate,
         lr_penalty=lr_penalty,
         xgb_policy=xgb_policy,
+        boruta_perc=boruta_perc,
+        boruta_alpha=boruta_alpha,
+        boruta_max_iter=boruta_max_iter,
     )
 
     # -------------------------------------------- ingest pre-existing artefacts
