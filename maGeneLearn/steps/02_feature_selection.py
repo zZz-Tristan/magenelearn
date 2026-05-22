@@ -105,6 +105,8 @@ def get_opts_muvr():
     parser.add_argument('--n-jobs', type=int, default=1,
                         help='Number of parallel jobs for MUVR/Boruta (default: 1 = sequential)')
     parser.add_argument('--method', type=str, choices=['muvr', 'boruta'], default='muvr', help='Feature selection method: muvr (default) or boruta')
+    parser.add_argument('--perc', type=int, default=100, help='Boruta percentile for shadow feature comparison (default: 100)')
+    parser.add_argument('--alpha', type=float, default=0.05, help='Boruta significance threshold (default: 0.05)')
     args = parser.parse_args()
     return (
         args.train_data,
@@ -122,7 +124,9 @@ def get_opts_muvr():
         args.metric,
         args.features_dropout_rate,
         args.remove_na,
-        args.method
+        args.method,
+        args.perc,
+        args.alpha
     )
 
 def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, remove_na=False):
@@ -148,7 +152,7 @@ def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, rem
 
     return train_data_muvr
 
-def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcome_col, n_repetitions, max_iter, n_outer, n_inner, metric, features_dropout_rate, remove_na=False, n_jobs=1, method='muvr'):
+def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcome_col, n_repetitions, max_iter, n_outer, n_inner, metric, features_dropout_rate, remove_na=False, n_jobs=1, method='muvr', perc=100, alpha=0.05):
 
     target_col = outcome_col
     train_data_muvr = train_data_muvr[[target_col]]
@@ -230,6 +234,7 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
 
         feature_selector.fit(X_muvr, y_variable, executor=executor)
         selected_features = feature_selector.get_selected_features(feature_names=feature_names)
+        print(f"Number of MUVR selected features - Min: {len(selected_features.min)}, Mid: {len(selected_features.mid)}, Max: {len(selected_features.max)}")
 
         # Obtain a dataframe containing MUVR selected features
         df_min = model_input[list(selected_features.min)]
@@ -262,13 +267,18 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
             n_estimators='auto',
             verbose=2,
             random_state=42,
-            max_iter=max_iter
+            max_iter=max_iter,
+            perc=perc,
+            alpha=alpha
         )
 
         boruta.fit(X_muvr, y_variable)
 
         selected_mask = boruta.support_
         selected_features = feature_names[selected_mask]
+
+        if len(selected_features) == 0:
+            sys.exit("Boruta rejected all features. Consider increasing max_iter, lowering perc, or increasing alpha.")
         
         df_min = model_input[list(selected_features)]
 
@@ -302,7 +312,9 @@ if __name__ == "__main__":
             metric,
             features_dropout_rate,
             remove_na,
-            method
+            method,
+            perc,
+            alpha
         ) = get_opts_muvr()
         print("Filtering data")
         train_filtered = prepare_data_muvr(
@@ -329,6 +341,8 @@ if __name__ == "__main__":
             metric,
             features_dropout_rate,
             remove_na=remove_na,
-            method=method
+            method=method,
+            perc=perc,
+            alpha=alpha
         )
 
