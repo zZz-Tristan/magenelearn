@@ -125,6 +125,9 @@ The wrapper exposes **two** high-level commands:
 | `--chisq-file`       | –                       | Pre-computed Chi²-reduced matrix (bypasses Step 01).   |
 | `--feature-model`    | =`--model`              | algorithm used **inside** MUVR/Boruta                  |
 | `--dropout-rate`     | 0.9                     | Randomly drop a fraction of features during MUVR (stability/regularization) |
+| `--boruta-perc`      | 100                     | BorutaPercentile for shadow feature comparison         |
+| `--boruta-alpha`     | 0.05                    | The significance threshold for Boruta                  |
+| `--boruta-max-iter`  | 100                     | Maximum number of iterations performed for Boruta      |
 | `--feature-selection-only` | off               | Run through Step 03 and **exit** (no model fitting).   | 
 | `--features-train`   | –                       | pre-built training matrix – skips 00-03. This matrix should contain the final features that will be used to train the model and also the group and outcome columns.                |
 | `--features-test`    | –                       | pre-built hold-out matrix. To be used within the "test" mode,                    |
@@ -132,6 +135,7 @@ The wrapper exposes **two** high-level commands:
 | `--n-splits`         | 5                       | Number of folds to create training/test splits. A value of 5 will be equal to do a 80/20 split |
 | `--scoring`          | balanced_accuracy       | Metric used to select the best hyperparameters (accuracy, balanced_accuracy, f1, f1_macro, f1_micro, precision, recall, roc_auc).         |
 | `--lineage-col`      | LINEAGE                 | Column name. Use to split the data with stratification |
+| `--id-co`            | SRA                     | Column name to use as the sample ID/index.             |
 | `--output-dir`       | timestamp               | root of the run                                        |
 | `--xgb-policy`      | depthwise                 | XGBoost tree growth policy: `depthwise | lossguide` |
 | `--lr-penalty`      | l2                 | LR penalty: 'l1 | l2 | elasticnet' |
@@ -323,7 +327,7 @@ For this you will use the following flags and files:
 
 `--features`: Pass a matrix (in tsv format) that contains the raw features of new samples.
 
-`--muvr-file`: You will pass the features that were used for training the model. Most of the times, these are features obtained after a feature selection step. This file will be used to filter the relevant data for the model.
+`--feature-file`: You will pass the features that were used for training the model. Most of the times, these are features obtained after a feature selection step. This file will be used to filter the relevant data for the model.
 
 
 ```bash
@@ -349,7 +353,7 @@ You will require the `--predict-only` flag:
 maGeneLearn test \
   --predict-only \
   --model-file runs/RFC/04_model/STEC_RFC_random.joblib \
-  --muvr-file selected_features/02_muvr/STEC_muvr_RFC_min.tsv \
+  --feature-file selected_features/02_muvr/STEC_muvr_RFC_min.tsv \
   --features test/external_data/full_features_unlabelled.tsv \
   --name unlabelled_isolates \
   --output-dir runs/RFC
