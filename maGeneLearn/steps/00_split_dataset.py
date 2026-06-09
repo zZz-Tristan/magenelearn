@@ -194,8 +194,14 @@ def main():
         args.meta_file,
         sep="\t",
         header=0,
-        index_col=None
+        index_col=None,
+        low_memory=False
     )
+
+    # Force group and lineage columns to uniform string type
+    for col in [args.group_col, args.lineage_col]:
+        metadata[col] = metadata[col].astype(str).str.strip()
+
     # set sample ID index
     if args.id_col not in metadata.columns:
         logging.error(f"ID column not found: {args.id_col}")
