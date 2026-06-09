@@ -10,7 +10,7 @@ from pathlib import Path
 Extracts a subset of user-selected features from a full feature matrix and merges with labels and group IDs.
 
 Inputs (CLI args):
-  --muvr_file     Path to MUVR-selected feature file (e.g. *_muvr_RFC_min.tsv).
+  --feature_file     Path to MUVR-selected feature file (e.g. *_muvr_RFC_min.tsv).
                    Must include:
                      * sample ID as index
                      * one column with the chosen label (specified via --label)
@@ -35,7 +35,7 @@ Outputs:
 
 Usage Example:
   python 03_extract_features.py \
-    --muvr_file results/muvr_RFC_min.tsv \
+    --feature_file results/muvr_RFC_min.tsv \
     --chisq_file data/full_chisq_matrix.tsv \
     --train_metadata data/train_metadata.tsv \
     --test_metadata data/test_metadata.tsv \
@@ -49,7 +49,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Extract MUVR-selected features from a full feature matrix for all samples (train/test)."
     )
-    parser.add_argument('--muvr_file', type=str, required=True,
+    parser.add_argument('--feature_file', type=str, required=True,
                         help='Path to MUVR-selected feature file (e.g. *_muvr_RFC_min.tsv)')
     parser.add_argument('--chisq_file', type=str, required=True,
                         help='Path to full feature matrix (e.g. full_chisq_matrix.tsv)')
@@ -216,8 +216,8 @@ def main():
         # group_column may be None; that's OK
 
 
-    print(f"Loading selected features from {args.muvr_file}")
-    features = load_selected(args.muvr_file, args.label)
+    print(f"Loading selected features from {args.feature_file}")
+    features = load_selected(args.feature_file, args.label)
 
 
     # Process train or/and test splits
