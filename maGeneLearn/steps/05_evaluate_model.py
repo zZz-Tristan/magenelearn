@@ -360,9 +360,20 @@ def run_evaluation(
 
             preds, probas = predict_with_pipeline(clf, X_te)
 
+            fold_classes = clf.named_steps.get("model", clf).classes_
+            proba_df = pd.DataFrame(probas, index=X_te.index, columns=fold_classes)
+
+            #add missing classes with probability 0
+            for cls in class_names:
+                if cls not in proba_df.columns:
+                    proba_df[cls] = 0.0
+            
+            #Ensure consistent column order
+            proba_df = proba_df[class_names]
+
             oof_true.append(y_te)
             oof_pred.append(preds)
-            oof_proba.append(pd.DataFrame(probas, index=X_te.index, columns=class_names))
+            oof_proba.append(proba_df)
 
 
             # feature importances
@@ -427,7 +438,21 @@ def run_evaluation(
                     if diff2:
                         logging.warning("Extra features in X_te: %s", list(diff2)[:10])
                 # --- End of diagnostic block ---
-                shap_vals_all.append(shap.TreeExplainer(model_step).shap_values(X_te))
+                explainer = shap.TreeExplainer(model_step)
+                shap_vals = explainer.shap_values(X_te)
+                fold_classes_2 = model_step.classes_
+                if isinstance(shap_vals, list):
+                    shap_dict = {cls: shap_vals[i] for i, cls in enumerate(fold_classes_2)}
+                else:
+                    shap_dict = {fold_classes_2[0]: shap_vals}
+                aligned = []
+                for cls in class_names:
+                    if cls in shap_dict:
+                        aligned.append(shap_dict[cls])
+                    else:
+                        #create zero SHAP values for missing class
+                        aligned.append(np.zeros((X_te.shape[0], X_te.shape[1])))
+                shap_vals_all.append(aligned)
             elif isinstance(model_step, LogisticRegression):
                 logging.info("Skipping SHAP: Logistic Regression not supported (use coefficients instead).")
             else:
