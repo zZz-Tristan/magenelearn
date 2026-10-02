@@ -587,16 +587,15 @@ def run_evaluation(
                     else:
                         X_te_aligned = X_te
                     # Reduce to top-N features by univariate variance (or just first N cols)
-                    N_TOP = min(500, X_te.shape[1])  # cap at 500 features
-                    top_features = X_te.iloc[:, :N_TOP]  # simple subset; could replace with chi² selection
+                    N_TOP = min(500, X_te_aligned.shape[1])  # cap at 500 features
                     result = permutation_importance(
-                        clf, top_features, y_te,
+                        clf, X_te_aligned, y_te,
                         n_repeats=10,
                         random_state=RSEED,
                         n_jobs=-1,
                         scoring=scoring
                     )
-                    fi = pd.Series(result.importances_mean, index=top_features.columns)
+                    fi = pd.Series(result.importances_mean, index=X_te_aligned.columns).nlargest(N_TOP)
                     feature_imps.append(fi)
             else:
                 logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
