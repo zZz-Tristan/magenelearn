@@ -466,7 +466,7 @@ def evaluate_train(ctx: Context) -> None:
     )
 
 
-def evaluate_holdout(ctx: Context) -> None:
+def evaluate_holdout(ctx: Context, skip_svm_importance: bool = False) -> None:
     if not ctx.feat_test:
         return  # nothing to do
     d = ctx.step_dir(7, "test_eval")
@@ -484,6 +484,8 @@ def evaluate_holdout(ctx: Context) -> None:
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring
     ]
+    if skip_svm_importance:
+        cmd.append("--skip-svm-importance")
     run(cmd, cwd=d, log=d / "eval_test.log", dry=ctx.dry_run, stream=True)
 
 # ---------------------------------------------------------------------------
@@ -720,7 +722,7 @@ def train(click_ctx: click.Context, *,
         plan.extend([
             (True, train_model),
             (True, evaluate_train),
-            (ctx.feat_test is not None, evaluate_holdout),
+            (ctx.feat_test is not None, lambda c: evaluate_holdout(c, skip_svm_importance=c.skip_svm_importance)),
         ])
 
     # ---------------------------------------------------------------- execute
