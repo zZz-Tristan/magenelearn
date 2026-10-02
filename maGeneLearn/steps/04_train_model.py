@@ -186,7 +186,7 @@ def prepare_pipeline(model_key, sampling, n_jobs, lr_penalty="l2",xgb_policy="de
             )
 
     elif model_key == "SVM":
-        estimator = SVC(random_state=RSEED, probability=True)  # probability=True for ROC/AUC support
+        estimator = SVC(random_state=RSEED, probability=False)  # probability=True for ROC/AUC support
 
 
     elif model_key == "LR":
@@ -343,6 +343,9 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
 
     final_model = clone(pipeline)
     final_model.set_params(**best_params)
+
+    if model_key = "SVM":
+        final_model.set_params(model__probability=True)
 
     if model_key == "XGBC" and sampling == "none":
         sw = compute_sample_weight("balanced", y)
